@@ -1,19 +1,32 @@
 """AX·FA 과제 현황판을 사내망에 띄우는 서버 (Python 3.8 이상, 표준 라이브러리만 사용).
 
-실행: python serve.py               → 이 PC의 모든 IP, 포트 8765
-      python serve.py --port 9000   → 포트 변경
-      python serve.py --host 12.82.113.36 → 특정 IP에서만 받기
+실행: python serve.py                  → 이 PC의 모든 IP, 포트 8765
+      python serve.py --port 9000      → 포트 변경
+      python serve.py --set-password   → 편집 비밀번호 새로 정하기
 
-data 폴더에 넣은 엑셀 중 가장 최근에 수정된 파일을 접속자 모두가 봅니다.
-서버는 읽기 전용입니다. 화면의 업로드는 올린 사람의 브라우저에서만 보입니다.
+보기는 접속자 누구나, 입력·수정·엑셀 반영은 편집 비밀번호를 아는 사람만 할 수 있습니다.
+데이터는 data 폴더에 저장됩니다.
+  data/store.json      현재 과제 데이터
+  data/history/*.json  주간 스냅샷(주마다 마지막 저장 상태) → 화면의 '전주 대비'
+  data/changes.jsonl   변경 이력(누가 언제 무엇을)
+  data/config.json     편집 비밀번호의 해시값
 """
 import argparse
+import getpass
+import hashlib
+import hmac
 import json
+import math
 import os
 import posixpath
+import re
+import secrets
 import socket
 import sys
-from datetime import datetime
+import threading
+import time
+import uuid
+from datetime import date, datetime, timedelta
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -21,66 +34,283 @@ from urllib.parse import unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
-DATA_EXTS = {".xlsx", ".xls", ".csv"}
-# 이 경로와 index.html만 내려줍니다. .git, tools 등 나머지는 404로 막습니다.
-PUBLIC_DIRS = ("/vendor/", "/data/", "/sample/")
+STORE = DATA / "store.json"
+CONFIG = DATA / "config.json"
+HISTORY = DATA / "history"
+CHANGES = DATA / "changes.jsonl"
+# 이 경로와 index.html만 내려줍니다. data(비밀번호 해시 포함), .git, tools 등은 404로 막습니다.
+PUBLIC_DIRS = ("/assets/", "/vendor/", "/sample/")
+# 주간 스냅샷에 남기는 항목: 전주 대비와 8주 추이 계산에 쓰는 값만
+SLIM = ("id", "team", "group", "task", "kind", "priority", "stage", "found_fte", "secured_fte",
+        "s3_date", "s3_fte", "s4_date", "s4_fte", "s5_date", "s5_fte", "re_team", "re_line", "re_etc", "act_end")
+KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
+ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
+MAX_BODY = 8 * 1024 * 1024
+LOCK = threading.Lock()
+FAILS = {}  # IP → 최근 비밀번호 실패 시각들 (무차별 대입 방지)
 
 
-def latest_data_file():
-    # ~$로 시작하는 파일은 엑셀이 파일을 여는 동안 만드는 잠금 파일이라 제외
-    files = [p for p in DATA.glob("*") if p.is_file() and p.suffix.lower() in DATA_EXTS and not p.name.startswith(("~$", "."))]
-    return max(files, key=lambda p: p.stat().st_mtime, default=None)
+class ApiError(Exception):
+    def __init__(self, status, message):
+        super().__init__(message)
+        self.status = status
 
 
+# ── 파일 읽기·쓰기 ───────────────────────────────────────────
+def read_json(path, default):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return default
+
+
+def write_json(path, obj):
+    # 임시 파일에 쓴 뒤 바꿔치기해서, 저장 도중 꺼져도 파일이 반쯤 쓰인 상태로 남지 않게 함
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def load_store():
+    return read_json(STORE, {"version": 0, "tasks": [], "updated": None, "updated_by": None})
+
+
+def week_of(d):
+    y, w, _ = d.isocalendar()
+    monday = d - timedelta(days=d.weekday())
+    return f"{y}-W{w:02d}", monday, monday + timedelta(days=6)
+
+
+# ── 비밀번호 ────────────────────────────────────────────────
+def hash_password(pw, salt_hex=None, iterations=200_000):
+    salt_hex = salt_hex or secrets.token_hex(16)
+    digest = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt_hex), iterations).hex()
+    return {"salt": salt_hex, "hash": digest, "iterations": iterations}
+
+
+def editable():
+    return bool(read_json(CONFIG, {}).get("hash"))
+
+
+def check_password(pw, ip):
+    now = time.time()
+    recent = [t for t in FAILS.get(ip, []) if now - t < 600]
+    FAILS[ip] = recent
+    if len(recent) >= 5:
+        raise ApiError(429, "비밀번호를 5번 틀려 10분 동안 편집이 잠겼습니다. 잠시 후 다시 시도해 주세요.")
+    cfg = read_json(CONFIG, {})
+    if not cfg.get("hash"):
+        raise ApiError(403, "편집 비밀번호가 설정되지 않아 보기 전용입니다. 서버 PC에서 'py serve.py --set-password'로 설정해 주세요.")
+    got = hash_password(str(pw or ""), cfg["salt"], cfg["iterations"])["hash"]
+    if not hmac.compare_digest(got, cfg["hash"]):
+        recent.append(now)
+        raise ApiError(401, "편집 비밀번호가 맞지 않습니다.")
+    FAILS.pop(ip, None)
+
+
+def set_password_interactive():
+    print("편집 비밀번호를 정합니다. 입력한 글자는 화면에 보이지 않습니다.")
+    print("아무것도 입력하지 않고 Enter를 누르면 보기 전용으로 시작합니다(나중에 --set-password로 설정).")
+    while True:
+        pw = getpass.getpass("  새 비밀번호: ")
+        if not pw:
+            write_json(CONFIG, {"hash": None})
+            print("보기 전용으로 시작합니다.")
+            return
+        if len(pw) < 4:
+            print("  4글자 이상으로 정해 주세요.")
+            continue
+        if getpass.getpass("  한 번 더 입력: ") != pw:
+            print("  두 번 입력한 비밀번호가 다릅니다. 다시 입력해 주세요.")
+            continue
+        write_json(CONFIG, hash_password(pw))
+        print("편집 비밀번호를 저장했습니다.")
+        return
+
+
+# ── 입력값 검사 ─────────────────────────────────────────────
+def clean_task(t):
+    if not isinstance(t, dict):
+        raise ApiError(400, "과제 데이터 형식이 올바르지 않습니다.")
+    out = {}
+    for k, v in t.items():
+        if k == "id" or not KEY_RE.match(str(k)):
+            continue
+        if v is None or isinstance(v, bool):
+            out[k] = v
+        elif isinstance(v, (int, float)):
+            out[k] = v if math.isfinite(v) else None
+        elif isinstance(v, str):
+            v = v.strip()[:4000]
+            out[k] = v or None
+        else:
+            raise ApiError(400, f"'{k}' 값의 형식이 올바르지 않습니다.")
+    if not out.get("team") or not out.get("task"):
+        raise ApiError(400, "팀과 과제명(중분류)은 꼭 입력해야 합니다.")
+    tid = t.get("id")
+    out["id"] = tid if isinstance(tid, str) and ID_RE.match(tid) else uuid.uuid4().hex[:12]
+    return out
+
+
+def check_unique(tasks):
+    seen = set()
+    for t in tasks:
+        key = (t["team"], t["task"])
+        if key in seen:
+            raise ApiError(400, f"{t['team']}에 같은 과제명 '{t['task']}'이(가) 두 번 있습니다.")
+        seen.add(key)
+
+
+# ── 저장 ────────────────────────────────────────────────────
+def commit(body, ip):
+    check_password(body.get("password"), ip)
+    editor = str(body.get("editor") or "").strip()[:30]
+    if not editor:
+        raise ApiError(400, "입력자 이름이 필요합니다.")
+    op = body.get("op")
+    with LOCK:
+        st = load_store()
+        if body.get("base_version") != st["version"]:
+            raise ApiError(409, "다른 사람이 먼저 수정했습니다.")
+        tasks = st["tasks"]
+        log = {"op": op}
+        if op == "save":
+            t = clean_task(body.get("task"))
+            old = next((x for x in tasks if x["id"] == t["id"]), None)
+            if old:
+                tasks = [t if x["id"] == t["id"] else x for x in tasks]
+                log["fields"] = sorted(k for k in set(old) | set(t) if old.get(k) != t.get(k) and k != "id")
+            else:
+                tasks = tasks + [t]
+                log["op"] = "add"
+            log.update(team=t["team"], task=t["task"])
+        elif op == "delete":
+            old = next((x for x in tasks if x["id"] == body.get("id")), None)
+            if not old:
+                raise ApiError(404, "삭제할 과제를 찾지 못했습니다. 이미 삭제됐을 수 있습니다.")
+            tasks = [x for x in tasks if x["id"] != old["id"]]
+            log.update(team=old["team"], task=old["task"])
+        elif op == "import":
+            teams = body.get("teams")
+            if not isinstance(teams, list) or not teams or not all(isinstance(x, str) and x for x in teams):
+                raise ApiError(400, "반영할 팀 목록이 없습니다.")
+            new = [clean_task(x) for x in (body.get("tasks") or [])]
+            if any(x["team"] not in teams for x in new):
+                raise ApiError(400, "반영할 팀 목록에 없는 팀의 과제가 섞여 있습니다.")
+            summary = []
+            for team in teams:
+                before = {x["task"]: x for x in tasks if x["team"] == team}
+                after = {x["task"]: x for x in new if x["team"] == team}
+                summary.append({"team": team, "added": len(after.keys() - before.keys()), "removed": len(before.keys() - after.keys()),
+                                "changed": sum(1 for k in after.keys() & before.keys() if {**after[k], "id": None} != {**before[k], "id": None})})
+            tasks = [x for x in tasks if x["team"] not in teams] + new
+            log["teams"] = summary
+        else:
+            raise ApiError(400, "알 수 없는 작업입니다.")
+        check_unique(tasks)
+        now = datetime.now()
+        st = {"version": st["version"] + 1, "tasks": tasks, "updated": now.strftime("%Y-%m-%d %H:%M"), "updated_by": editor}
+        write_json(STORE, st)
+        week, _, end = week_of(now.date())
+        write_json(HISTORY / f"{week}.json", {"week": week, "end": end.isoformat(), "saved": now.isoformat(timespec="seconds"),
+                                               "tasks": [{k: x.get(k) for k in SLIM} for x in tasks]})
+        with CHANGES.open("a", encoding="utf-8") as f:
+            f.write(json.dumps({"at": now.strftime("%Y-%m-%d %H:%M"), "editor": editor, "ip": ip, **log}, ensure_ascii=False) + "\n")
+        return st
+
+
+def store_payload():
+    st = load_store()
+    _, monday, _ = week_of(date.today())
+    return {**st, "editable": editable(), "week_start": monday.isoformat()}
+
+
+def history_payload():
+    files = sorted(HISTORY.glob("*-W*.json"))[-16:]
+    return {"weeks": [read_json(p, {}) for p in files]}
+
+
+def changes_payload():
+    try:
+        lines = CHANGES.read_text(encoding="utf-8").splitlines()[-100:]
+    except FileNotFoundError:
+        lines = []
+    out = []
+    for line in reversed(lines):
+        try:
+            x = json.loads(line)
+            x.pop("ip", None)
+            out.append(x)
+        except ValueError:
+            continue
+    return {"changes": out}
+
+
+# ── HTTP ────────────────────────────────────────────────────
 class Handler(SimpleHTTPRequestHandler):
     extensions_map = {
         **SimpleHTTPRequestHandler.extensions_map,
-        ".html": "text/html; charset=utf-8",
-        ".js": "text/javascript; charset=utf-8",
-        ".json": "application/json; charset=utf-8",
-        ".csv": "text/csv; charset=utf-8",
+        ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8",
+        ".json": "application/json; charset=utf-8", ".woff2": "font/woff2",
         ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        ".xls": "application/vnd.ms-excel",
     }
 
-    def allowed(self, path):
-        return path in ("/", "/index.html") or path.startswith(PUBLIC_DIRS)
+    def path_only(self):
+        # '..'를 먼저 정리한 경로로 검사해야 /vendor/../data 같은 우회가 막힘
+        return posixpath.normpath(unquote(urlsplit(self.path).path))
 
-    def route(self):
-        # '..'를 먼저 정리한 경로로 검사해야 /vendor/../.git 같은 우회가 막힘
-        path = posixpath.normpath(unquote(urlsplit(self.path).path))
-        if path == "/api/data":
-            f = latest_data_file()
-            info = {"file": f.name, "modified": datetime.fromtimestamp(f.stat().st_mtime).strftime("%Y-%m-%d %H:%M"), "size": f.stat().st_size, "mtime": f.stat().st_mtime} if f else {"file": None}
-            body = json.dumps(info, ensure_ascii=False).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json; charset=utf-8")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            return body
-        if not self.allowed(path):
-            self.send_error(404)
-            return None
-        return False
+    def send_json(self, status, obj):
+        body = json.dumps(obj, ensure_ascii=False).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def do_GET(self):
-        r = self.route()
-        if r is False:
+        path = self.path_only()
+        api = {"/api/store": store_payload, "/api/history": history_payload, "/api/changes": changes_payload,
+               "/api/version": lambda: {"version": load_store()["version"]}}.get(path)
+        if api:
+            return self.send_json(200, api())
+        if path in ("/", "/index.html") or path.startswith(PUBLIC_DIRS):
             return super().do_GET()
-        if r:
-            self.wfile.write(r)
+        self.send_error(404)
 
     def do_HEAD(self):
-        r = self.route()
-        if r is False:
+        path = self.path_only()
+        if path in ("/", "/index.html") or path.startswith(PUBLIC_DIRS):
             return super().do_HEAD()
+        self.send_error(404)
+
+    def do_POST(self):
+        path = self.path_only()
+        ip = self.client_address[0]
+        try:
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > MAX_BODY:
+                raise ApiError(413, "보낸 데이터가 너무 큽니다(8MB 초과).")
+            try:
+                body = json.loads(self.rfile.read(n) or b"{}")
+            except ValueError:
+                raise ApiError(400, "요청 형식이 올바르지 않습니다.")
+            if not isinstance(body, dict):
+                raise ApiError(400, "요청 형식이 올바르지 않습니다.")
+            if path == "/api/auth":
+                check_password(body.get("password"), ip)
+                return self.send_json(200, {"ok": True})
+            if path == "/api/commit":
+                st = commit(body, ip)
+                return self.send_json(200, {**st, "editable": True, "week_start": week_of(date.today())[1].isoformat()})
+            raise ApiError(404, "없는 주소입니다.")
+        except ApiError as e:
+            self.send_json(e.status, {"error": str(e)})
 
     def list_directory(self, path):
         self.send_error(404)
         return None
 
     def end_headers(self):
-        # 데이터 파일을 바꾸면 접속자가 새로고침 없이도 1분 안에 새 파일을 받도록 캐시하지 않음
         self.send_header("Cache-Control", "no-cache")
         super().end_headers()
 
@@ -110,21 +340,26 @@ def main():
     ap = argparse.ArgumentParser(description="AX·FA 과제 현황판 서버")
     ap.add_argument("--host", default="0.0.0.0", help="받을 IP (기본: 이 PC의 모든 IP)")
     ap.add_argument("--port", type=int, default=int(os.environ.get("DASHBOARD_PORT", 8765)), help="포트 (기본: 8765)")
+    ap.add_argument("--set-password", action="store_true", help="편집 비밀번호를 새로 정함")
     a = ap.parse_args()
     DATA.mkdir(exist_ok=True)
+    HISTORY.mkdir(exist_ok=True)
+    if a.set_password or (not CONFIG.exists() and sys.stdin.isatty()):
+        set_password_interactive()
     try:
         httpd = Server((a.host, a.port), partial(Handler, directory=str(ROOT)))
     except OSError as e:
         print(f"[오류] {a.host}:{a.port}에서 서버를 열지 못했습니다: {e}")
-        print(f"       다른 프로그램이 포트 {a.port}를 쓰고 있으면 'python serve.py --port 8766'처럼 다른 번호로 실행하세요.")
+        print(f"       다른 프로그램이 포트 {a.port}를 쓰고 있으면 'py serve.py --port 8766'처럼 다른 번호로 실행하세요.")
         sys.exit(1)
     hosts = lan_ips() if a.host == "0.0.0.0" else [a.host]
-    f = latest_data_file()
+    st = load_store()
     print("AX·FA 과제 현황판 서버를 시작했습니다. 이 창을 닫거나 Ctrl+C를 누르면 멈춥니다.")
     print(f"  이 PC에서:       http://localhost:{a.port}")
     for ip in hosts:
         print(f"  사내 다른 PC에서: http://{ip}:{a.port}")
-    print(f"  공유 데이터:      {f.name if f else '없음 (data 폴더에 엑셀을 넣으면 모두에게 표시, 그 전까지는 예시 데이터)'}")
+    print(f"  저장된 과제:      {len(st['tasks'])}건" + ("" if st["tasks"] else " (예시 데이터 표시 중, 엑셀 업로드나 과제 추가로 시작)"))
+    print(f"  편집:            {'비밀번호로 가능' if editable() else '보기 전용 (py serve.py --set-password 로 설정)'}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
