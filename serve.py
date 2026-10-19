@@ -2,29 +2,23 @@
 
 실행: python serve.py                  → 이 PC의 모든 IP, 포트 8765
       python serve.py --port 9000      → 포트 변경
-      python serve.py --set-password   → 편집 비밀번호 새로 정하기
+      python serve.py --readonly       → 보기만 가능(입력·수정·업로드 막기)
 
-보기는 접속자 누구나, 입력·수정·엑셀 반영은 편집 비밀번호를 아는 사람만 할 수 있습니다.
-데이터는 data 폴더에 저장됩니다.
+접속자 누구나 보고 입력·수정·엑셀 반영을 할 수 있습니다. 데이터는 data 폴더에 저장됩니다.
   data/store.json      현재 과제 데이터
   data/history/*.json  주간 스냅샷(주마다 마지막 저장 상태) → 화면의 '전주 대비'
   data/changes.jsonl   변경 이력(누가 언제 무엇을)
-  data/config.json     편집 비밀번호의 해시값
+  data/backup/*.json   저장 직전 상태(최근 200개). 잘못 지웠을 때 되살리는 용도
 """
 import argparse
-import getpass
-import hashlib
-import hmac
 import json
 import math
 import os
 import posixpath
 import re
-import secrets
 import socket
 import sys
 import threading
-import time
 import uuid
 from datetime import date, datetime, timedelta
 from functools import partial
@@ -35,10 +29,12 @@ from urllib.parse import unquote, urlsplit
 ROOT = Path(__file__).resolve().parent
 DATA = ROOT / "data"
 STORE = DATA / "store.json"
-CONFIG = DATA / "config.json"
 HISTORY = DATA / "history"
+BACKUP = DATA / "backup"
 CHANGES = DATA / "changes.jsonl"
-# 이 경로와 index.html만 내려줍니다. data(비밀번호 해시 포함), .git, tools 등은 404로 막습니다.
+KEEP_BACKUPS = 200
+READONLY = False
+# 이 경로와 index.html만 내려줍니다. data, .git, tools 등은 404로 막습니다.
 PUBLIC_DIRS = ("/assets/", "/vendor/", "/sample/")
 # 주간 스냅샷에 남기는 항목: 전주 대비와 8주 추이 계산에 쓰는 값만
 SLIM = ("id", "team", "group", "task", "kind", "priority", "stage", "found_fte", "secured_fte",
@@ -47,7 +43,6 @@ KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}$")
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,40}$")
 MAX_BODY = 8 * 1024 * 1024
 LOCK = threading.Lock()
-FAILS = {}  # IP → 최근 비밀번호 실패 시각들 (무차별 대입 방지)
 
 
 class ApiError(Exception):
@@ -79,53 +74,6 @@ def week_of(d):
     y, w, _ = d.isocalendar()
     monday = d - timedelta(days=d.weekday())
     return f"{y}-W{w:02d}", monday, monday + timedelta(days=6)
-
-
-# ── 비밀번호 ────────────────────────────────────────────────
-def hash_password(pw, salt_hex=None, iterations=200_000):
-    salt_hex = salt_hex or secrets.token_hex(16)
-    digest = hashlib.pbkdf2_hmac("sha256", pw.encode("utf-8"), bytes.fromhex(salt_hex), iterations).hex()
-    return {"salt": salt_hex, "hash": digest, "iterations": iterations}
-
-
-def editable():
-    return bool(read_json(CONFIG, {}).get("hash"))
-
-
-def check_password(pw, ip):
-    now = time.time()
-    recent = [t for t in FAILS.get(ip, []) if now - t < 600]
-    FAILS[ip] = recent
-    if len(recent) >= 5:
-        raise ApiError(429, "비밀번호를 5번 틀려 10분 동안 편집이 잠겼습니다. 잠시 후 다시 시도해 주세요.")
-    cfg = read_json(CONFIG, {})
-    if not cfg.get("hash"):
-        raise ApiError(403, "편집 비밀번호가 설정되지 않아 보기 전용입니다. 서버 PC에서 'py serve.py --set-password'로 설정해 주세요.")
-    got = hash_password(str(pw or ""), cfg["salt"], cfg["iterations"])["hash"]
-    if not hmac.compare_digest(got, cfg["hash"]):
-        recent.append(now)
-        raise ApiError(401, "편집 비밀번호가 맞지 않습니다.")
-    FAILS.pop(ip, None)
-
-
-def set_password_interactive():
-    print("편집 비밀번호를 정합니다. 입력한 글자는 화면에 보이지 않습니다.")
-    print("아무것도 입력하지 않고 Enter를 누르면 보기 전용으로 시작합니다(나중에 --set-password로 설정).")
-    while True:
-        pw = getpass.getpass("  새 비밀번호: ")
-        if not pw:
-            write_json(CONFIG, {"hash": None})
-            print("보기 전용으로 시작합니다.")
-            return
-        if len(pw) < 4:
-            print("  4글자 이상으로 정해 주세요.")
-            continue
-        if getpass.getpass("  한 번 더 입력: ") != pw:
-            print("  두 번 입력한 비밀번호가 다릅니다. 다시 입력해 주세요.")
-            continue
-        write_json(CONFIG, hash_password(pw))
-        print("편집 비밀번호를 저장했습니다.")
-        return
 
 
 # ── 입력값 검사 ─────────────────────────────────────────────
@@ -162,11 +110,19 @@ def check_unique(tasks):
 
 
 # ── 저장 ────────────────────────────────────────────────────
+def backup(st):
+    # 저장 직전 상태를 남겨 두고 오래된 것부터 지움
+    if not st["tasks"]:
+        return
+    write_json(BACKUP / f"store-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}.json", st)
+    for old in sorted(BACKUP.glob("store-*.json"))[:-KEEP_BACKUPS]:
+        old.unlink(missing_ok=True)
+
+
 def commit(body, ip):
-    check_password(body.get("password"), ip)
-    editor = str(body.get("editor") or "").strip()[:30]
-    if not editor:
-        raise ApiError(400, "입력자 이름이 필요합니다.")
+    if READONLY:
+        raise ApiError(403, "보기 전용으로 실행 중인 서버라 저장할 수 없습니다.")
+    editor = str(body.get("editor") or "").strip()[:30] or f"이름 없음({ip})"
     op = body.get("op")
     with LOCK:
         st = load_store()
@@ -208,6 +164,7 @@ def commit(body, ip):
         else:
             raise ApiError(400, "알 수 없는 작업입니다.")
         check_unique(tasks)
+        backup(st)
         now = datetime.now()
         st = {"version": st["version"] + 1, "tasks": tasks, "updated": now.strftime("%Y-%m-%d %H:%M"), "updated_by": editor}
         write_json(STORE, st)
@@ -222,7 +179,7 @@ def commit(body, ip):
 def store_payload():
     st = load_store()
     _, monday, _ = week_of(date.today())
-    return {**st, "editable": editable(), "week_start": monday.isoformat()}
+    return {**st, "editable": not READONLY, "week_start": monday.isoformat()}
 
 
 def history_payload():
@@ -296,12 +253,9 @@ class Handler(SimpleHTTPRequestHandler):
                 raise ApiError(400, "요청 형식이 올바르지 않습니다.")
             if not isinstance(body, dict):
                 raise ApiError(400, "요청 형식이 올바르지 않습니다.")
-            if path == "/api/auth":
-                check_password(body.get("password"), ip)
-                return self.send_json(200, {"ok": True})
             if path == "/api/commit":
                 st = commit(body, ip)
-                return self.send_json(200, {**st, "editable": True, "week_start": week_of(date.today())[1].isoformat()})
+                return self.send_json(200, {**st, "editable": not READONLY, "week_start": week_of(date.today())[1].isoformat()})
             raise ApiError(404, "없는 주소입니다.")
         except ApiError as e:
             self.send_json(e.status, {"error": str(e)})
@@ -340,12 +294,12 @@ def main():
     ap = argparse.ArgumentParser(description="AX·FA 과제 현황판 서버")
     ap.add_argument("--host", default="0.0.0.0", help="받을 IP (기본: 이 PC의 모든 IP)")
     ap.add_argument("--port", type=int, default=int(os.environ.get("DASHBOARD_PORT", 8765)), help="포트 (기본: 8765)")
-    ap.add_argument("--set-password", action="store_true", help="편집 비밀번호를 새로 정함")
+    ap.add_argument("--readonly", action="store_true", help="보기만 가능하게 실행")
     a = ap.parse_args()
-    DATA.mkdir(exist_ok=True)
-    HISTORY.mkdir(exist_ok=True)
-    if a.set_password or (not CONFIG.exists() and sys.stdin.isatty()):
-        set_password_interactive()
+    global READONLY
+    READONLY = a.readonly
+    for d in (DATA, HISTORY, BACKUP):
+        d.mkdir(exist_ok=True)
     try:
         httpd = Server((a.host, a.port), partial(Handler, directory=str(ROOT)))
     except OSError as e:
@@ -359,7 +313,7 @@ def main():
     for ip in hosts:
         print(f"  사내 다른 PC에서: http://{ip}:{a.port}")
     print(f"  저장된 과제:      {len(st['tasks'])}건" + ("" if st["tasks"] else " (예시 데이터 표시 중, 엑셀 업로드나 과제 추가로 시작)"))
-    print(f"  편집:            {'비밀번호로 가능' if editable() else '보기 전용 (py serve.py --set-password 로 설정)'}")
+    print(f"  편집:            {'보기 전용 (--readonly)' if READONLY else '누구나 가능 · 저장 직전 상태는 data/backup에 보관'}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:
