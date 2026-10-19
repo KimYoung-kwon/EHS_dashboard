@@ -1,2 +1,6 @@
 __pycache__/
 .DS_Store
+
+# 실제 과제 엑셀은 사내 데이터이므로 저장소에 올리지 않음
+data/*
+!data/README.md

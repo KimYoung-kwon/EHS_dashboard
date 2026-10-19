@@ -5,10 +5,10 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>AX·FA 과제 현황판</title>
 <meta name="claude:viewport-fit-sides" content="cover">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- 웹폰트는 인터넷이 막힌 사내망에서도 화면이 멈추지 않도록 비차단으로 불러오고, 실패하면 맑은 고딕으로 표시 -->
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap" media="print" onload="this.media='all'">
+<script src="vendor/d3.min.js"></script>
+<script src="vendor/xlsx.full.min.js"></script>
 <style>
 /* 레이아웃: 상단 필터 바 → 한 줄 요약 → 탭(종합 / 일정 / 과제 목록 / 데이터 점검), 카드 그리드는 폭에 따라 1~2열 */
 :root {
@@ -160,6 +160,7 @@ td.wrap { white-space: normal; min-width: 14rem; }
       <label for="f-kind">과제구분<select id="f-kind"></select></label>
       <input type="file" id="f-file" accept=".xlsx,.xls,.csv" hidden>
       <button class="btn primary" id="b-upload" type="button">엑셀 업로드</button>
+      <button class="btn" id="b-shared" type="button" hidden>공유 데이터</button>
       <button class="btn" id="b-sample" type="button">예시 데이터</button>
     </div>
   </header>
@@ -358,11 +359,14 @@ const state = { rows: [], source: '', asof: '', team: '전체', kind: '전체', 
 let ALL = [];
 const sample = JSON.parse(document.getElementById('sample-data').textContent || '[]');
 
-function load(rows, source, asof) {
+// keep: 공유 데이터 자동 갱신처럼 같은 데이터의 새 버전일 때 필터·기준일을 유지
+function load(rows, source, asof, mode, keep = false) {
   state.rows = rows.map(normalize).filter((r) => r.task);
-  state.source = source;
-  state.asof = asof || d3.timeFormat('%Y-%m-%d')(new Date());
-  state.team = '전체'; state.kind = '전체'; state.stage = null; state.sel = null; state.rule = null;
+  state.source = source; state.mode = mode;
+  if (!keep) {
+    state.asof = asof || d3.timeFormat('%Y-%m-%d')(new Date());
+    state.team = '전체'; state.kind = '전체'; state.stage = null; state.sel = null; state.rule = null;
+  }
   $('#f-asof').value = state.asof;
   render();
 }
@@ -687,13 +691,47 @@ $('#f-file').addEventListener('change', async (e) => {
   const msg = $('#msg');
   try {
     const res = readWorkbook(await f.arrayBuffer(), f.name);
-    load(res.rows, `${f.name} (${res.sheet} 시트)`, null);
+    load(res.rows, `내 파일 ${f.name} (${res.sheet} 시트)`, null, 'local');
     msg.className = 'msg'; msg.hidden = false;
-    msg.textContent = `${f.name}에서 ${state.rows.length}개 과제를 읽었습니다. 인식한 컬럼 ${res.known}개` + (res.unknown.length ? `, 인식하지 못한 컬럼: ${res.unknown.join(', ')}` : '') + '.';
+    msg.textContent = `${f.name}에서 ${state.rows.length}개 과제를 읽었습니다. 인식한 컬럼 ${res.known}개` + (res.unknown.length ? `, 인식하지 못한 컬럼: ${res.unknown.join(', ')}` : '') + '.'
+      + ' 이 파일은 지금 이 화면에서만 보이며 다른 사람에게 공유되지 않습니다.' + (shared.file ? ' 공유 데이터로 돌아가려면 [공유 데이터]를 누르세요.' : '');
   } catch (err) { msg.className = 'msg err'; msg.hidden = false; msg.textContent = err.message; }
   e.target.value = '';
 });
-$('#b-sample').addEventListener('click', () => { $('#msg').hidden = true; load(sample, '예시 데이터', sample[0]?.asof); });
+$('#b-sample').addEventListener('click', () => { $('#msg').hidden = true; load(sample, '예시 데이터', sample[0]?.asof, 'sample'); });
+$('#b-shared').addEventListener('click', () => { $('#msg').hidden = true; loadShared(false); });
+
+// 서버(serve.py)로 열었을 때: 서버 PC의 data 폴더에 있는 가장 최근 엑셀을 접속자 모두가 같이 봄.
+// 파일로 직접 열었거나(file://) data 폴더가 비어 있으면 false를 돌려주고 예시 데이터를 보여 줌.
+const shared = { file: null, modified: null, mtime: null };
+async function sharedInfo() {
+  try { const res = await fetch('api/data', { cache: 'no-store' }); return res.ok ? await res.json() : null; } catch (e) { return null; }
+}
+async function loadShared(keep, info) {
+  info = info ?? await sharedInfo();
+  if (!info?.file) return false;
+  try {
+    const res = await fetch('data/' + encodeURIComponent(info.file), { cache: 'no-store' });
+    if (!res.ok) throw new Error(`공유 데이터 ${info.file}을(를) 내려받지 못했습니다 (HTTP ${res.status}).`);
+    const r = readWorkbook(await res.arrayBuffer(), info.file);
+    Object.assign(shared, info);
+    $('#b-shared').hidden = false;
+    load(r.rows, `공유 데이터 ${info.file} (${info.modified} 수정)`, null, 'shared', keep);
+    return true;
+  } catch (err) {
+    const msg = $('#msg'); msg.className = 'msg err'; msg.hidden = false;
+    msg.textContent = `${err.message} 서버 PC의 data 폴더에 있는 파일을 확인해 주세요.`;
+    return false;
+  }
+}
+// 공유 데이터를 보는 중이면 1분마다 data 폴더의 파일이 바뀌었는지 확인해 자동으로 다시 읽음
+setInterval(async () => {
+  if (state.mode !== 'shared' || document.hidden) return;
+  const info = await sharedInfo();
+  if (info?.file && (info.file !== shared.file || info.mtime !== shared.mtime || info.size !== shared.size) && await loadShared(true, info)) {
+    const msg = $('#msg'); msg.className = 'msg'; msg.hidden = false; msg.textContent = `공유 데이터가 ${info.file} (${info.modified} 수정)로 갱신되었습니다.`;
+  }
+}, 60000);
 $('#f-asof').addEventListener('change', (e) => { if (e.target.value && e.target.validity.valid) { state.asof = e.target.value; render(); } });
 $('#f-team').addEventListener('change', (e) => { state.team = e.target.value; render(); });
 $('#f-kind').addEventListener('change', (e) => { state.kind = e.target.value; render(); });
@@ -701,8 +739,10 @@ $('#q').addEventListener('input', (e) => { state.q = e.target.value; render(); }
 for (const b of document.querySelectorAll('.tab')) b.addEventListener('click', () => setTab(b.dataset.tab));
 let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 150); });
 
-load(sample, '예시 데이터', sample[0]?.asof);
-const h = location.hash.slice(1); if (['overview', 'schedule', 'list', 'check'].includes(h)) setTab(h);
+loadShared(false).then((ok) => {
+  if (!ok) load(sample, '예시 데이터', sample[0]?.asof, 'sample');
+  const h = location.hash.slice(1); if (['overview', 'schedule', 'list', 'check'].includes(h)) setTab(h);
+});
 })();
 </script>
 </body>
