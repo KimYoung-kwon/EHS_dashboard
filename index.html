@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AX·FA 과제 현황판</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/d3/7.9.0/d3.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+/* 레이아웃: 상단 필터 바 → 한 줄 요약 → 탭(종합 / 일정 / 과제 목록 / 데이터 점검), 카드 그리드는 폭에 따라 1~2열 */
+:root {
+  --bg: #f3f5f6; --panel: #ffffff; --fg: #1a2329; --muted: #5d6a72; --line: #dce2e5; --soft: #eef2f4;
+  --accent: #0e6a8a; --found: #b5c9d2; --real: #6b4fb5;
+  --ok: #1d8350; --warn: #a86b12; --bad: #c0392b;
+  --st1: #cfe2ea; --st2: #9dc6d6; --st3: #63a6c0; --st4: #2f86a6; --st5: #0d5d7a;
+  --font: "IBM Plex Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", system-ui, sans-serif;
+  --r: 10px;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #11171a; --panel: #192126; --fg: #e2e9ec; --muted: #94a3aa; --line: #2b353b; --soft: #1f292e;
+  --accent: #5db4d4; --found: #3b525c; --real: #a893f0;
+  --ok: #4fc58c; --warn: #e2a845; --bad: #f2735d;
+  --st1: #23404b; --st2: #2c5d70; --st3: #397e97; --st4: #4fa1c0; --st5: #86c9e2; color-scheme: dark } }
+:root[data-theme="dark"] {
+  --bg: #11171a; --panel: #192126; --fg: #e2e9ec; --muted: #94a3aa; --line: #2b353b; --soft: #1f292e;
+  --accent: #5db4d4; --found: #3b525c; --real: #a893f0;
+  --ok: #4fc58c; --warn: #e2a845; --bad: #f2735d;
+  --st1: #23404b; --st2: #2c5d70; --st3: #397e97; --st4: #4fa1c0; --st5: #86c9e2; color-scheme: dark }
+body { background: var(--bg); color: var(--fg); font-family: var(--font); margin: 0; }
+[hidden] { display: none !important; }
+.ax { max-width: 1320px; margin-inline: auto; padding-block: 20px 48px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: grid; gap: 16px; font-variant-numeric: tabular-nums; }
+.ax h1 { font-size: 1.45rem; font-weight: 700; margin: 0; text-wrap: balance; letter-spacing: -.01em; }
+.ax h2 { font-size: .98rem; font-weight: 600; margin: 0; }
+.ax p { margin: 0; }
+.head { display: flex; flex-wrap: wrap; gap: 12px 24px; align-items: end; justify-content: space-between; }
+.head .src { color: var(--muted); font-size: .8rem; margin-top: 4px; }
+.ctrl { display: flex; flex-wrap: wrap; gap: 8px; align-items: end; }
+.ctrl label { display: grid; gap: 3px; font-size: .72rem; color: var(--muted); letter-spacing: .02em; }
+.ctrl select, .ctrl input[type=date] { font: inherit; font-size: .85rem; color: var(--fg); background: var(--panel); border: 1px solid var(--line); border-radius: 7px; padding: 6px 8px; min-width: 0; }
+.btn { font: inherit; font-size: .85rem; border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 7px; padding: 6px 12px; cursor: pointer; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--panel); font-weight: 600; }
+.btn:focus-visible, select:focus-visible, input:focus-visible, .tab:focus-visible, .clk:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.take { font-size: .98rem; line-height: 1.6; max-width: 72ch; }
+.take b { font-weight: 600; }
+.msg { font-size: .85rem; padding: 8px 12px; border-radius: 8px; background: var(--soft); }
+.msg.err { color: var(--bad); }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--line); overflow-x: auto; }
+.tab { font: inherit; font-size: .9rem; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); padding: 8px 14px; cursor: pointer; white-space: nowrap; }
+.tab[aria-selected=true] { color: var(--fg); border-bottom-color: var(--accent); font-weight: 600; }
+.tab .cnt { font-size: .72rem; margin-left: 4px; padding: 1px 6px; border-radius: 9px; background: var(--soft); }
+.tab .cnt.bad { color: var(--bad); }
+.page { display: grid; gap: 16px; }
+.tiles { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); }
+.tile { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 14px 16px; display: grid; gap: 4px; align-content: start; }
+.tile .lab { font-size: .78rem; color: var(--muted); }
+.tile .big { font-size: 1.9rem; font-weight: 600; line-height: 1.15; letter-spacing: -.02em; }
+.tile .big small { font-size: .9rem; font-weight: 500; color: var(--muted); margin-left: 3px; }
+.tile .sub { font-size: .78rem; color: var(--muted); line-height: 1.5; }
+.tile.alert { border-color: var(--bad); }
+.tile.alert .big { color: var(--bad); }
+.pill { display: inline-block; font-size: .72rem; font-weight: 600; padding: 1px 7px; border-radius: 9px; border: 1px solid currentColor; white-space: nowrap; }
+.c-ok { color: var(--ok); } .c-warn { color: var(--warn); } .c-bad { color: var(--bad); } .c-mut { color: var(--muted); }
+.grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 30rem), 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--r); padding: 16px 18px; display: grid; gap: 12px; align-content: start; min-width: 0; position: relative; }
+.card .note { font-size: .78rem; color: var(--muted); margin-top: 3px; line-height: 1.5; }
+.wide { grid-column: 1 / -1; }
+/* 효과 흐름 */
+.flow { display: grid; gap: 10px; }
+.flow .row { display: grid; grid-template-columns: 6.5rem 1fr 4.8rem; gap: 10px; align-items: center; font-size: .83rem; }
+.flow .track { position: relative; height: 22px; background: var(--soft); border-radius: 5px; }
+.flow .bar { position: absolute; inset: 0 auto 0 0; border-radius: 5px; }
+.flow .tgt { position: absolute; top: -4px; bottom: -4px; width: 2px; background: var(--fg); }
+.flow .val { text-align: right; font-weight: 600; }
+.flow .conv { grid-column: 2 / 3; font-size: .72rem; color: var(--muted); margin-top: -6px; }
+/* 단계 파이프라인 */
+.pipe { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; }
+.stg { display: grid; grid-template-rows: auto 110px auto; gap: 6px; text-align: center; border-radius: 8px; padding: 6px 2px; background: none; border: 0; font: inherit; color: inherit; cursor: pointer; }
+.stg:hover { background: var(--soft); }
+.stg .nm { font-size: .72rem; color: var(--muted); line-height: 1.3; min-height: 2.6em; }
+.stg .nm b { display: block; color: var(--fg); font-size: .85rem; }
+.stg .col { display: flex; align-items: end; justify-content: center; }
+.stg .col div { width: min(46px, 80%); border-radius: 5px 5px 2px 2px; min-height: 3px; }
+.stg .n { font-size: 1.25rem; font-weight: 600; }
+.stg .f { font-size: .72rem; color: var(--muted); }
+.stg .d { font-size: .7rem; color: var(--bad); min-height: 1.2em; }
+/* 팀/지표 막대 */
+.hb { display: grid; gap: 10px; }
+.hb .row { display: grid; grid-template-columns: 6.2rem 1fr; gap: 10px; align-items: center; border-radius: 6px; padding: 4px 6px; }
+.hb .row.clk { cursor: pointer; }
+.hb .row.clk:hover { background: var(--soft); }
+.hb .row.on { background: var(--soft); outline: 1px solid var(--line); }
+.hb .nm { font-size: .82rem; }
+.hb .nm small { display: block; color: var(--muted); font-size: .7rem; }
+.hb .bars { display: grid; gap: 3px; }
+.hb .ln { display: grid; grid-template-columns: 1fr 3.6rem; gap: 6px; align-items: center; font-size: .72rem; }
+.hb .ln i { display: block; height: 8px; border-radius: 4px; }
+.hb .ln span { text-align: right; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: .75rem; color: var(--muted); }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+/* 표 */
+.tblwrap { overflow: auto; max-height: 620px; border: 1px solid var(--line); border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: .82rem; }
+th, td { padding: 7px 10px; text-align: left; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th { position: sticky; top: 0; background: var(--panel); z-index: 1; font-weight: 600; font-size: .75rem; color: var(--muted); }
+th button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+th[aria-sort=ascending] button::after { content: " ▲"; } th[aria-sort=descending] button::after { content: " ▼"; }
+td.num, th.num { text-align: right; }
+tbody tr { cursor: pointer; } tbody tr:hover { background: var(--soft); } tbody tr.sel { background: var(--soft); }
+td.wrap { white-space: normal; min-width: 14rem; }
+.cellbar { display: inline-block; vertical-align: middle; height: 6px; border-radius: 3px; background: var(--accent); margin-right: 6px; }
+.stchip { display: inline-block; font-size: .72rem; font-weight: 600; padding: 0 7px; border-radius: 9px; color: var(--fg); border: 2px solid; background: var(--panel); }
+.toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.toolbar input[type=search] { font: inherit; font-size: .85rem; padding: 6px 10px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel); color: var(--fg); flex: 1 1 14rem; min-width: 0; }
+.chip { font: inherit; font-size: .78rem; border: 1px solid var(--line); background: var(--panel); color: var(--fg); border-radius: 14px; padding: 3px 10px; cursor: pointer; }
+.chip[aria-pressed=true] { background: var(--accent); border-color: var(--accent); color: var(--panel); }
+/* 상세 */
+#detail .hd { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: baseline; justify-content: space-between; }
+#detail .secs { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 19rem), 1fr)); }
+.sec { border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; display: grid; gap: 6px; align-content: start; }
+.sec h3 { font-size: .78rem; margin: 0 0 2px; color: var(--accent); font-weight: 600; letter-spacing: .02em; }
+.kv { display: grid; grid-template-columns: minmax(0, 9.5rem) 1fr; gap: 8px; font-size: .78rem; line-height: 1.45; }
+.kv dt { color: var(--muted); } .kv dd { margin: 0; overflow-wrap: anywhere; }
+.kv dd.miss { color: var(--bad); }
+.ms { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 4px; }
+.ms > div { border-radius: 6px; padding: 6px 4px; text-align: center; font-size: .7rem; background: var(--soft); color: var(--muted); }
+.ms > div b, .ms > div span { display: block; } .ms > div b { font-size: .8rem; color: var(--fg); }
+.ms > div.done { background: var(--st3); color: var(--fg); }
+.ms > div.cur { outline: 2px solid var(--accent); }
+.ms > div.late { outline: 2px solid var(--bad); }
+/* 차트 공통 */
+.chart { position: relative; min-height: 260px; }
+.chart svg { display: block; overflow: visible; }
+.chart text { fill: var(--muted); font-size: 11px; font-family: var(--font); }
+.chart .grid line { stroke: var(--line); }
+.chart .axis path, .chart .axis line { stroke: var(--line); }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 18px rgb(0 0 0 / .14); padding: 6px 10px; font-size: .75rem; line-height: 1.5; max-width: 260px; z-index: 5; }
+.tip .t { color: var(--muted); }
+.ganttwrap { overflow-x: auto; }
+.empty { color: var(--muted); font-size: .85rem; padding: 18px 0; text-align: center; }
+.rules { display: flex; flex-wrap: wrap; gap: 8px; }
+.rules .chip b { margin-left: 4px; }
+@media (max-width: 560px) { .tile .big { font-size: 1.6rem; } .flow .row { grid-template-columns: 5.2rem 1fr 4.2rem; } .stg { grid-template-rows: auto 80px auto; } }
+</style>
+</head>
+<body>
+<div class="ax">
+  <header class="head">
+    <div>
+      <h1>AX·공장자동화 과제 현황판</h1>
+      <p class="src" id="src">—</p>
+    </div>
+    <div class="ctrl">
+      <label for="f-asof">기준일<input type="date" id="f-asof" min="2020-01-01" max="2099-12-31"></label>
+      <label for="f-team">팀<select id="f-team"></select></label>
+      <label for="f-kind">과제구분<select id="f-kind"></select></label>
+      <input type="file" id="f-file" accept=".xlsx,.xls,.csv" hidden>
+      <button class="btn primary" id="b-upload" type="button">엑셀 업로드</button>
+      <button class="btn" id="b-sample" type="button">예시 데이터</button>
+    </div>
+  </header>
+  <p class="msg" id="msg" hidden></p>
+  <p class="take" id="take">—</p>
+
+  <nav class="tabs" role="tablist" aria-label="화면">
+    <button class="tab" role="tab" id="t-overview" data-tab="overview" aria-selected="true">종합 현황</button>
+    <button class="tab" role="tab" id="t-schedule" data-tab="schedule" aria-selected="false">추진 일정</button>
+    <button class="tab" role="tab" id="t-list" data-tab="list" aria-selected="false">과제 목록<span class="cnt" id="cnt-list"></span></button>
+    <button class="tab" role="tab" id="t-check" data-tab="check" aria-selected="false">데이터 점검<span class="cnt bad" id="cnt-check"></span></button>
+  </nav>
+
+  <section class="page" id="overview">
+    <div class="tiles" id="tiles"></div>
+    <div class="grid">
+      <div class="card" id="c-flow">
+        <div><h2>FTE 효과 흐름</h2><p class="note">현재 공수(Baseline) → 발굴 → 확보 → 실현(재배치 인원). 세로선은 기준일까지 도래한 단계의 누적 확보 목표입니다.</p></div>
+        <div class="flow" id="flow"></div>
+      </div>
+      <div class="card" id="c-pipe">
+        <div><h2>진행단계별 과제</h2><p class="note">막대 높이는 과제 수, 아래는 발굴 FTE 합계와 해당 단계 목표일을 넘긴 지연 건수입니다. 단계를 누르면 과제 목록으로 이동합니다.</p></div>
+        <div class="pipe" id="pipe"></div>
+      </div>
+      <div class="card wide" id="c-curve">
+        <div><h2>누적 확보 목표 대비 실적 (FTE)</h2><p class="note">각 과제의 S3·S4·S5 목표일정에 누적 확보 목표 FTE를 쌓은 계단선과, 기준일 현재 확보 FTE(점)를 비교합니다.</p></div>
+        <div class="chart" id="curve"></div>
+      </div>
+      <div class="card" id="c-team">
+        <div><h2>팀별 발굴·확보·실현</h2><p class="note">팀을 누르면 화면 전체가 그 팀으로 필터됩니다.</p></div>
+        <div class="legend"><span><i style="background:var(--found)"></i>발굴 FTE</span><span><i style="background:var(--accent)"></i>확보 FTE</span><span><i style="background:var(--real)"></i>실현 인원</span></div>
+        <div class="hb" id="teams"></div>
+      </div>
+      <div class="card" id="c-mgmt">
+        <div><h2>경영관리지표별 과제</h2><p class="note">P 생산성 · Q 품질 · C 원가 · D 납기 · S 안전 · M 사기. 오른쪽은 P 외 지표 과제의 KPI 확보 진척(확보 효과 ÷ 발굴 효과) 평균입니다.</p></div>
+        <div class="hb" id="mgmt"></div>
+      </div>
+      <div class="card wide" id="c-watch">
+        <div><h2>관리 필요 과제</h2><p class="note">현재 단계 목표일이 지났거나, 기준일 누적 목표 대비 확보가 80% 미만이거나, 조건부 필수 항목이 비어 있는 과제입니다.</p></div>
+        <div class="tblwrap" style="max-height:360px"><table id="watch"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="page" id="schedule" hidden>
+    <div class="card">
+      <div><h2>계획 대비 실적 일정</h2><p class="note">옅은 막대는 계획 기간, 진한 막대는 실적 기간(미완료는 기준일까지), 마름모는 S1~S5 목표일정입니다. 채워진 마름모는 지난 단계, 빨간 테두리는 목표일을 넘긴 현재 단계입니다.</p></div>
+      <div class="legend"><span><i style="background:var(--found)"></i>계획</span><span><i style="background:var(--accent)"></i>실적(정상)</span><span><i style="background:var(--bad)"></i>실적(지연)</span><span><i style="background:var(--ok)"></i>완료</span></div>
+      <div class="ganttwrap"><div class="chart" id="gantt"></div></div>
+    </div>
+  </section>
+
+  <section class="page" id="list" hidden>
+    <div class="card">
+      <div class="toolbar">
+        <input type="search" id="q" placeholder="과제명·팀·담당자 ID·KPI 검색" aria-label="과제 검색">
+        <span class="legend" id="stchips"></span>
+      </div>
+      <div class="tblwrap"><table id="tbl"></table></div>
+    </div>
+    <div class="card" id="detail" hidden></div>
+  </section>
+
+  <section class="page" id="check" hidden>
+    <div class="card">
+      <div><h2>입력 규칙 점검</h2><p class="note">양식의 공통 필수·조건부 필수 규칙과 값의 앞뒤 관계(단계 일정 순서, 누적 목표 증가)를 업로드한 행마다 검사합니다. 항목을 누르면 해당 규칙만 봅니다.</p></div>
+      <div class="rules" id="rules"></div>
+      <div class="tblwrap"><table id="issues"></table></div>
+    </div>
+  </section>
+</div>
+
+<script id="sample-data" type="application/json">[{"asof":"2026-10-19","team":"제조기술팀","group":"공정기술그룹","cat":"공정조건 최적화","task":"AI 공정파라미터 추천","kind":"AX","agent":"O","scope":"복수 라인","line":"SMT 1~3라인","tgt_dept":"제조기술팀","tgt_ids":"oh.jk","dev_dept":"AI솔루션그룹","dev_ids":"seo.hr;oh.jk;park.jy","mgmt":"Q","kpi":"불량률","kpi_etc":null,"kpi_etc_unit":null,"unit":"%","stage":"S3","next_plan":"S4 정식 업무 적용 착수, 2026.12 S3 완료 목표","kpi_asis":2.8,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":1.2,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":1.6,"kpi_secured":0.14,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.5,"asis_cnt":38318,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.26,"tobe_cnt":38318,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":19159.0,"tobe_mh":9962.7,"base_fte":9.58,"found_fte":4.6,"secured_fte":0.42,"secured_basis":null,"s1_date":"2026-03-03","s2_date":"2026-08-11","s3_date":"2026-12-13","s3_fte":1.71,"s3_kpi":0.6,"s4_date":"2027-03-31","s4_fte":3.16,"s4_kpi":1.1,"s5_date":"2027-06-20","s5_fte":4.6,"s5_kpi":1.6,"plan_start":"2025-12-29","plan_end":"2027-06-20","act_start":"2026-01-22","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"제조기술팀","group":"공정기술그룹","cat":"공정조건 최적화","task":"설비 레시피 자동 세팅","kind":"FA","agent":"X","scope":"단일 라인","line":"가공 2라인","tgt_dept":"제조기술팀","tgt_ids":"lim.th;kim.mj","dev_dept":"스마트팩토리팀","dev_ids":"seo.hr;jung.hn;yoon.ej","mgmt":"D","kpi":"셋업시간","kpi_etc":null,"kpi_etc_unit":null,"unit":"분","stage":"S4","next_plan":"S5 표준화·확산 착수, 2026.12 S4 완료 목표","kpi_asis":45,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":15,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":30,"kpi_secured":11.03,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.25,"asis_cnt":14552,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.14,"tobe_cnt":14552,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":3638.0,"tobe_mh":2037.3,"base_fte":1.82,"found_fte":0.8,"secured_fte":0.29,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2026-05-02","s2_date":"2026-08-02","s3_date":"2026-10-12","s3_fte":0.32,"s3_kpi":12.17,"s4_date":"2026-12-12","s4_fte":0.57,"s4_kpi":21.46,"s5_date":"2027-01-28","s5_fte":0.8,"s5_kpi":30,"plan_start":"2026-03-27","plan_end":"2027-01-28","act_start":"2026-03-29","act_end":null,"pkms":"등록","pkms_name":"공정조건 최적화-설비 레시피 자동 세팅","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"제조기술팀","group":"자동화그룹","cat":"물류 자동화","task":"AMR 자재 이송","kind":"FA","agent":"X","scope":"공장 전체","line":"자재창고~조립동","tgt_dept":"제조기술팀","tgt_ids":"choi.dw","dev_dept":"스마트팩토리팀","dev_ids":"lim.th","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S4","next_plan":"S5 표준화·확산 착수, 2026.12 S4 완료 목표","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.5,"asis_cnt":17159,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.11,"tobe_cnt":17159,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":8579.5,"tobe_mh":1887.5,"base_fte":4.29,"found_fte":3.35,"secured_fte":0.73,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2026-03-31","s2_date":"2026-07-11","s3_date":"2026-09-28","s3_fte":0.91,"s3_kpi":null,"s4_date":"2026-12-05","s4_fte":2.25,"s4_kpi":null,"s5_date":"2027-01-26","s5_fte":3.35,"s5_kpi":null,"plan_start":"2026-02-18","plan_end":"2027-01-26","act_start":"2026-02-12","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"제조기술팀","group":"자동화그룹","cat":"물류 자동화","task":"자동창고 입출고 연동","kind":"FA","agent":"X","scope":"공장 전체","line":"자재창고","tgt_dept":"제조기술팀","tgt_ids":"kim.mj","dev_dept":"스마트팩토리팀","dev_ids":"park.jy;seo.hr;han.ys","mgmt":"D","kpi":"자재 리드타임","kpi_etc":null,"kpi_etc_unit":null,"unit":"시간","stage":"S4","next_plan":"S5 표준화·확산 착수, 2027.01 S4 완료 목표","kpi_asis":6,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":2,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":4,"kpi_secured":1.04,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.5,"asis_cnt":26997,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.17,"tobe_cnt":26997,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":13498.5,"tobe_mh":4589.5,"base_fte":6.75,"found_fte":4.45,"secured_fte":1.15,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2026-01-19","s2_date":"2026-06-19","s3_date":"2026-10-12","s3_fte":1.13,"s3_kpi":1.01,"s4_date":"2027-01-21","s4_fte":3.26,"s4_kpi":2.93,"s5_date":"2027-04-07","s5_fte":4.45,"s5_kpi":4,"plan_start":"2025-11-20","plan_end":"2027-04-07","act_start":"2025-11-18","act_end":null,"pkms":"등록","pkms_name":"물류 자동화-자동창고 입출고 연동","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"제조기술팀","group":"자동화그룹","cat":"비전검사 자동화","task":"외관검사 비전 도입","kind":"FA","agent":"X","scope":"단일 라인","line":"조립 1라인 최종검사","tgt_dept":"제조기술팀","tgt_ids":"choi.dw","dev_dept":"스마트팩토리팀","dev_ids":"kim.mj","mgmt":"Q","kpi":"검사 누락률","kpi_etc":null,"kpi_etc_unit":null,"unit":"%","stage":"S4","next_plan":"S5 표준화·확산 착수, 2026.11 S4 완료 목표","kpi_asis":1.5,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":0.3,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":1.2,"kpi_secured":0.28,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":4,"asis_cnt":5428,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":1.47,"tobe_cnt":5428,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":21712,"tobe_mh":7979.2,"base_fte":10.86,"found_fte":6.87,"secured_fte":1.58,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-10-18","s2_date":"2026-03-26","s3_date":"2026-07-25","s3_fte":2.26,"s3_kpi":0.39,"s4_date":"2026-11-08","s4_fte":5.82,"s4_kpi":1.02,"s5_date":"2027-01-27","s5_fte":6.87,"s5_kpi":1.2,"plan_start":"2025-08-16","plan_end":"2027-01-27","act_start":"2025-09-12","act_end":null,"pkms":"등록","pkms_name":"비전검사 자동화-외관검사 비전 도입","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"제조기술팀","group":"자동화그룹","cat":"비전검사 자동화","task":"라벨 OCR 검증","kind":"FA","agent":"X","scope":"복수 라인","line":"포장 1~2라인","tgt_dept":"제조기술팀","tgt_ids":"yoon.ej","dev_dept":"스마트팩토리팀","dev_ids":"jung.hn","mgmt":"Q","kpi":"라벨 오부착","kpi_etc":null,"kpi_etc_unit":null,"unit":"건","stage":"S5","next_plan":null,"kpi_asis":18,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":2,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":16,"kpi_secured":15.13,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":12.85,"kpi_realized_basis":"정식 적용 후 3개월 실적","asis_hr":2,"asis_cnt":1294,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":1.06,"tobe_cnt":1294,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":2588,"tobe_mh":1371.6,"base_fte":1.29,"found_fte":0.61,"secured_fte":0.58,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-09-12","s2_date":"2026-01-12","s3_date":"2026-04-16","s3_fte":0.16,"s3_kpi":4.24,"s4_date":"2026-07-07","s4_fte":0.42,"s4_kpi":11.07,"s5_date":"2026-09-07","s5_fte":0.61,"s5_kpi":16,"plan_start":"2025-07-25","plan_end":"2026-09-07","act_start":"2025-08-21","act_end":"2026-09-02","pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"품질보증팀","group":"검사그룹","cat":"검사 자동화","task":"AI 외관불량 판정","kind":"AX","agent":"X","scope":"복수 라인","line":"출하검사 공정","tgt_dept":"품질보증팀","tgt_ids":"shin.wj","dev_dept":"AI솔루션그룹","dev_ids":"yoon.ej;oh.jk","mgmt":"Q","kpi":"불량 유출","kpi_etc":null,"kpi_etc_unit":null,"unit":"건","stage":"S5","next_plan":null,"kpi_asis":24,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":6,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":18,"kpi_secured":9.7,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":3,"asis_cnt":1835,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":1.42,"tobe_cnt":1835,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":5505,"tobe_mh":2605.7,"base_fte":2.75,"found_fte":1.45,"secured_fte":0.78,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-10-26","s2_date":"2026-03-03","s3_date":"2026-06-09","s3_fte":0.5,"s3_kpi":6.24,"s4_date":"2026-09-02","s4_fte":0.97,"s4_kpi":11.98,"s5_date":"2026-11-06","s5_fte":1.45,"s5_kpi":18,"plan_start":"2025-09-05","plan_end":"2026-11-06","act_start":"2025-09-27","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"품질보증팀","group":"검사그룹","cat":"검사 자동화","task":"수입검사 성적서 자동 판독","kind":"AX","agent":"O","scope":"팀 업무","line":"수입검사","tgt_dept":"품질보증팀","tgt_ids":"jung.hn","dev_dept":"DX추진팀","dev_ids":"kim.mj","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S3","next_plan":"S4 정식 업무 적용 착수, 2026.11 S3 완료 목표","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.25,"asis_cnt":82452,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.07,"tobe_cnt":82452,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":20613.0,"tobe_mh":5771.6,"base_fte":10.31,"found_fte":7.42,"secured_fte":1.48,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2026-03-13","s2_date":"2026-07-26","s3_date":"2026-11-06","s3_fte":3.12,"s3_kpi":null,"s4_date":"2027-02-04","s4_fte":5.74,"s4_kpi":null,"s5_date":"2027-04-13","s5_fte":7.42,"s5_kpi":null,"plan_start":"2026-01-18","plan_end":"2027-04-13","act_start":"2026-01-21","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"품질보증팀","group":"검사그룹","cat":"검사 자동화","task":"치수측정 자동화","kind":"FA","agent":"X","scope":"단일 라인","line":"가공 1라인 측정실","tgt_dept":"품질보증팀","tgt_ids":"kim.mj;shin.wj","dev_dept":"스마트팩토리팀","dev_ids":"lim.th","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S5","next_plan":null,"kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.5,"asis_cnt":25615,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.17,"tobe_cnt":25615,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":12807.5,"tobe_mh":4354.6,"base_fte":6.4,"found_fte":4.23,"secured_fte":4.03,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-07-20","s2_date":"2025-11-14","s3_date":"2026-02-12","s3_fte":1.89,"s3_kpi":null,"s4_date":"2026-05-01","s4_fte":3.3,"s4_kpi":null,"s5_date":"2026-06-29","s5_fte":4.23,"s5_kpi":null,"plan_start":"2025-06-04","plan_end":"2026-06-29","act_start":"2025-05-26","act_end":"2026-06-24","pkms":"미등록","pkms_name":null,"re_team":2,"re_team_date":"2026-05-31","re_line":null,"re_line_date":null,"re_etc":1,"re_etc_date":"2026-08-08"},{"asof":"2026-10-19","team":"품질보증팀","group":"품질분석그룹","cat":"품질 분석","task":"불량 원인분석 Agent","kind":"AX","agent":"O","scope":"팀 업무","line":"품질분석","tgt_dept":"품질보증팀","tgt_ids":"lim.th","dev_dept":"DX추진팀","dev_ids":"yoon.ej;oh.jk;kim.mj","mgmt":"Q","kpi":"원인분석 소요시간","kpi_etc":null,"kpi_etc_unit":null,"unit":"시간","stage":"S5","next_plan":null,"kpi_asis":16,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":4,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":12,"kpi_secured":11.47,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":11.5,"kpi_realized_basis":"정식 적용 후 3개월 실적","asis_hr":0.25,"asis_cnt":43975,"asis_ppl":2,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.1,"tobe_cnt":43975,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":21987.5,"tobe_mh":4397.5,"base_fte":10.99,"found_fte":8.79,"secured_fte":8.4,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-08-09","s2_date":"2025-12-24","s3_date":"2026-04-09","s3_fte":3.78,"s3_kpi":5.16,"s4_date":"2026-07-10","s4_fte":7.01,"s4_kpi":9.57,"s5_date":"2026-09-17","s5_fte":8.79,"s5_kpi":12,"plan_start":"2025-06-15","plan_end":"2026-09-17","act_start":"2025-06-09","act_end":"2026-09-24","pkms":"미등록","pkms_name":null,"re_team":5,"re_team_date":"2026-08-09","re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"품질보증팀","group":"품질분석그룹","cat":"품질 분석","task":"고객 클레임 자동 분류","kind":"AX","agent":"O","scope":"팀 업무","line":"클레임 접수","tgt_dept":"품질보증팀","tgt_ids":"jung.hn","dev_dept":"DX추진팀","dev_ids":"kim.mj;choi.dw;lee.sh","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S2","next_plan":"S2 지연 만회: 데이터 수집 범위 재협의 후 2026.12 완료 예정","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1,"asis_cnt":7466,"asis_ppl":2,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.49,"tobe_cnt":7466,"tobe_ppl":2,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":14932,"tobe_mh":7316.7,"base_fte":7.47,"found_fte":3.81,"secured_fte":null,"secured_basis":null,"s1_date":"2026-04-28","s2_date":"2026-08-07","s3_date":"2026-10-23","s3_fte":1.51,"s3_kpi":null,"s4_date":"2026-12-29","s4_fte":2.92,"s4_kpi":null,"s5_date":"2027-02-18","s5_fte":3.81,"s5_kpi":null,"plan_start":"2026-03-19","plan_end":"2027-02-18","act_start":"2026-04-06","act_end":null,"pkms":"등록","pkms_name":"품질 분석-고객 클레임 자동 분류","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"품질보증팀","group":"품질분석그룹","cat":"품질 분석","task":"SPC 이상 자동 알림","kind":"AX","agent":"X","scope":"공장 전체","line":"전 공정","tgt_dept":"품질보증팀","tgt_ids":"yoon.ej;seo.hr","dev_dept":"DX추진팀","dev_ids":"choi.dw;shin.wj;yoon.ej","mgmt":"Q","kpi":"공정능력지수","kpi_etc":null,"kpi_etc_unit":null,"unit":"Cpk","stage":"S2","next_plan":"S2 지연 만회: 설비 인터페이스 보완 후 2026.12 완료 예정","kpi_asis":1.1,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"증가","kpi_tobe":1.5,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":0.4,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1,"asis_cnt":2622,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.47,"tobe_cnt":2622,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":2622,"tobe_mh":1232.3,"base_fte":1.31,"found_fte":0.69,"secured_fte":null,"secured_basis":null,"s1_date":"2026-03-27","s2_date":"2026-09-08","s3_date":"2027-01-12","s3_fte":0.2,"s3_kpi":0.11,"s4_date":"2027-05-01","s4_fte":0.58,"s4_kpi":0.33,"s5_date":"2027-07-23","s5_fte":0.69,"s5_kpi":0.4,"plan_start":"2026-01-21","plan_end":"2027-07-23","act_start":"2026-02-08","act_end":null,"pkms":"등록","pkms_name":"품질 분석-SPC 이상 자동 알림","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산1팀","group":"조립그룹","cat":"조립 자동화","task":"체결 공정 로봇화","kind":"FA","agent":"X","scope":"단일 라인","line":"조립 2라인 체결","tgt_dept":"생산1팀","tgt_ids":"seo.hr;han.ys;lim.th","dev_dept":"스마트팩토리팀","dev_ids":"kang.sb;lee.sh;kim.mj","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S4","next_plan":"S4 지연 만회: 모델 정확도 개선 후 2026.12 완료 예정","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1,"asis_cnt":5037,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.48,"tobe_cnt":5037,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":5037,"tobe_mh":2417.8,"base_fte":2.52,"found_fte":1.31,"secured_fte":0.34,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-10-26","s2_date":"2026-03-14","s3_date":"2026-06-28","s3_fte":0.4,"s3_kpi":null,"s4_date":"2026-09-28","s4_fte":0.9,"s4_kpi":null,"s5_date":"2026-12-07","s5_fte":1.31,"s5_kpi":null,"plan_start":"2025-09-01","plan_end":"2026-12-07","act_start":"2025-09-08","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산1팀","group":"조립그룹","cat":"조립 자동화","task":"협동로봇 부품 공급","kind":"FA","agent":"X","scope":"단일 라인","line":"조립 1라인","tgt_dept":"생산1팀","tgt_ids":"lee.sh;seo.hr","dev_dept":"스마트팩토리팀","dev_ids":"jung.hn;park.jy;kim.mj","mgmt":"S","kpi":"근골격계 위험작업","kpi_etc":null,"kpi_etc_unit":null,"unit":"건","stage":"S5","next_plan":null,"kpi_asis":12,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":3,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":9,"kpi_secured":7.91,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":8.58,"kpi_realized_basis":"정식 적용 후 3개월 실적","asis_hr":1,"asis_cnt":7909,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.46,"tobe_cnt":7909,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":7909,"tobe_mh":3638.1,"base_fte":3.95,"found_fte":2.14,"secured_fte":1.88,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-11-08","s2_date":"2026-02-12","s3_date":"2026-04-27","s3_fte":0.81,"s3_kpi":3.4,"s4_date":"2026-06-30","s4_fte":1.56,"s4_kpi":6.58,"s5_date":"2026-08-18","s5_fte":2.14,"s5_kpi":9,"plan_start":"2025-10-01","plan_end":"2026-08-18","act_start":"2025-10-31","act_end":"2026-08-01","pkms":"등록","pkms_name":"조립 자동화-협동로봇 부품 공급","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산1팀","group":"조립그룹","cat":"생산계획","task":"일일 생산계획 자동 수립","kind":"AX","agent":"O","scope":"팀 업무","line":"생산계획","tgt_dept":"생산1팀","tgt_ids":"lee.sh","dev_dept":"DX추진팀","dev_ids":"park.jy;lim.th;seo.hr","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S2","next_plan":"S3 현장 실증·검증 착수, 2027.01 S2 완료 목표","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.5,"asis_cnt":6218,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.26,"tobe_cnt":6218,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":3109.0,"tobe_mh":1616.7,"base_fte":1.55,"found_fte":0.75,"secured_fte":null,"secured_basis":null,"s1_date":"2026-08-05","s2_date":"2027-01-15","s3_date":"2027-05-19","s3_fte":0.33,"s3_kpi":null,"s4_date":"2027-09-04","s4_fte":0.56,"s4_kpi":null,"s5_date":"2027-11-25","s5_fte":0.75,"s5_kpi":null,"plan_start":"2026-06-02","plan_end":"2027-11-25","act_start":"2026-06-02","act_end":null,"pkms":"등록","pkms_name":"생산계획-일일 생산계획 자동 수립","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산1팀","group":"조립그룹","cat":"생산계획","task":"자재 결품 예측","kind":"AX","agent":"O","scope":"공장 전체","line":"조립동","tgt_dept":"생산1팀","tgt_ids":"jung.hn;kim.mj","dev_dept":"DX추진팀","dev_ids":"kim.mj","mgmt":"D","kpi":"결품 발생","kpi_etc":null,"kpi_etc_unit":null,"unit":"건","stage":"S5","next_plan":null,"kpi_asis":40,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":10,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":30,"kpi_secured":29.18,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":27.85,"kpi_realized_basis":"정식 적용 후 3개월 실적","asis_hr":2,"asis_cnt":6774,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.77,"tobe_cnt":6774,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":13548,"tobe_mh":5216.0,"base_fte":6.77,"found_fte":4.17,"secured_fte":4.05,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-09-25","s2_date":"2025-12-25","s3_date":"2026-03-04","s3_fte":1.21,"s3_kpi":8.73,"s4_date":"2026-05-04","s4_fte":3.31,"s4_kpi":23.83,"s5_date":"2026-06-19","s5_fte":4.17,"s5_kpi":30,"plan_start":"2025-08-20","plan_end":"2026-06-19","act_start":"2025-08-15","act_end":"2026-06-08","pkms":"등록","pkms_name":"생산계획-자재 결품 예측","re_team":2,"re_team_date":"2026-06-03","re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산1팀","group":"가공그룹","cat":"가공 자동화","task":"공구 마모 예측","kind":"AX","agent":"X","scope":"복수 라인","line":"가공 1~3라인","tgt_dept":"생산1팀","tgt_ids":"lim.th;oh.jk;lee.sh","dev_dept":"AI솔루션그룹","dev_ids":"han.ys;shin.wj;jung.hn","mgmt":"C","kpi":"공구비","kpi_etc":null,"kpi_etc_unit":null,"unit":"백만원","stage":"S3","next_plan":"S4 정식 업무 적용 착수, 2026.10 S3 완료 목표","kpi_asis":180,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":120,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":60,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1.5,"asis_cnt":11638,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.43,"tobe_cnt":11638,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":17457.0,"tobe_mh":5004.3,"base_fte":8.73,"found_fte":6.23,"secured_fte":null,"secured_basis":null,"s1_date":"2026-02-18","s2_date":"2026-07-10","s3_date":"2026-10-27","s3_fte":2.09,"s3_kpi":20.15,"s4_date":"2027-01-30","s4_fte":4.09,"s4_kpi":39.42,"s5_date":"2027-04-12","s5_fte":6.23,"s5_kpi":60,"plan_start":"2025-12-23","plan_end":"2027-04-12","act_start":"2025-12-21","act_end":null,"pkms":"등록","pkms_name":"가공 자동화-공구 마모 예측","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산1팀","group":"가공그룹","cat":"가공 자동화","task":"CNC 자동 로딩","kind":"FA","agent":"X","scope":"단일 라인","line":"가공 3라인","tgt_dept":"생산1팀","tgt_ids":"han.ys","dev_dept":"스마트팩토리팀","dev_ids":"choi.dw;yoon.ej;han.ys","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S2","next_plan":"S3 현장 실증·검증 착수, 2026.12 S2 완료 목표","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":2,"asis_cnt":9468,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.65,"tobe_cnt":9468,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":18936,"tobe_mh":6154.2,"base_fte":9.47,"found_fte":6.39,"secured_fte":null,"secured_basis":null,"s1_date":"2026-08-26","s2_date":"2026-12-19","s3_date":"2027-03-17","s3_fte":2.68,"s3_kpi":null,"s4_date":"2027-06-02","s4_fte":5.31,"s4_kpi":null,"s5_date":"2027-07-30","s5_fte":6.39,"s5_kpi":null,"plan_start":"2026-07-11","plan_end":"2027-07-30","act_start":"2026-07-14","act_end":null,"pkms":"등록","pkms_name":"가공 자동화-CNC 자동 로딩","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산2팀","group":"도장그룹","cat":"도장 자동화","task":"도장 로봇 궤적 자동생성","kind":"AX","agent":"X","scope":"단일 라인","line":"도장 1라인","tgt_dept":"생산2팀","tgt_ids":"yoon.ej;jung.hn;choi.dw","dev_dept":"DX추진팀","dev_ids":"kang.sb","mgmt":"Q","kpi":"도장 재작업률","kpi_etc":null,"kpi_etc_unit":null,"unit":"%","stage":"S3","next_plan":"S3 지연 만회: 모델 정확도 개선 후 2026.12 완료 예정","kpi_asis":4.5,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":1.5,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":3.0,"kpi_secured":0.5,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":2,"asis_cnt":4895,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.81,"tobe_cnt":4895,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":9790,"tobe_mh":3965.0,"base_fte":4.89,"found_fte":2.91,"secured_fte":0.49,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-09-13","s2_date":"2026-02-27","s3_date":"2026-07-06","s3_fte":1.19,"s3_kpi":1.23,"s4_date":"2026-10-25","s4_fte":2.22,"s4_kpi":2.29,"s5_date":"2027-01-17","s5_fte":2.91,"s5_kpi":3.0,"plan_start":"2025-07-09","plan_end":"2027-01-17","act_start":"2025-07-03","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산2팀","group":"도장그룹","cat":"도장 자동화","task":"도료 사용량 최적화","kind":"AX","agent":"X","scope":"복수 라인","line":"도장 1~2라인","tgt_dept":"생산2팀","tgt_ids":"choi.dw;oh.jk","dev_dept":"DX추진팀","dev_ids":"shin.wj;oh.jk;lee.sh","mgmt":"C","kpi":"도료비","kpi_etc":null,"kpi_etc_unit":null,"unit":"백만원","stage":"S3","next_plan":null,"kpi_asis":420,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":350,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":70,"kpi_secured":7.62,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1.5,"asis_cnt":3019,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.86,"tobe_cnt":3019,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":4528.5,"tobe_mh":2596.3,"base_fte":2.26,"found_fte":0.97,"secured_fte":0.11,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2026-02-23","s2_date":"2026-08-05","s3_date":"2026-12-07","s3_fte":0.39,"s3_kpi":28.41,"s4_date":"2027-03-26","s4_fte":0.63,"s4_kpi":45.82,"s5_date":"2027-06-16","s5_fte":0.97,"s5_kpi":70,"plan_start":"2025-12-20","plan_end":"2027-06-16","act_start":"2025-12-28","act_end":null,"pkms":"등록","pkms_name":"도장 자동화-도료 사용량 최적화","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산2팀","group":"도장그룹","cat":"에너지","task":"건조로 에너지 최적화","kind":"AX","agent":"X","scope":"복수 라인","line":"건조로 1~2호기","tgt_dept":"생산2팀","tgt_ids":"han.ys","dev_dept":"DX추진팀","dev_ids":"choi.dw","mgmt":"C","kpi":"전력비","kpi_etc":null,"kpi_etc_unit":null,"unit":"백만원","stage":"S3","next_plan":"S4 정식 업무 적용 착수, 2026.11 S3 완료 목표","kpi_asis":600,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":510,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":90,"kpi_secured":12.47,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1.5,"asis_cnt":10765,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.53,"tobe_cnt":10765,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":16147.5,"tobe_mh":5705.5,"base_fte":8.07,"found_fte":5.22,"secured_fte":0.72,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2026-03-20","s2_date":"2026-07-26","s3_date":"2026-11-02","s3_fte":1.86,"s3_kpi":32.03,"s4_date":"2027-01-26","s4_fte":3.56,"s4_kpi":61.38,"s5_date":"2027-04-01","s5_fte":5.22,"s5_kpi":90,"plan_start":"2026-01-28","plan_end":"2027-04-01","act_start":"2026-02-27","act_end":null,"pkms":"등록","pkms_name":"에너지-건조로 에너지 최적화","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산2팀","group":"포장그룹","cat":"포장 자동화","task":"자동 포장·라벨링","kind":"FA","agent":"X","scope":"복수 라인","line":"포장 1~2라인","tgt_dept":"생산2팀","tgt_ids":"jung.hn","dev_dept":"스마트팩토리팀","dev_ids":"yoon.ej;han.ys;park.jy","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S2","next_plan":"S3 현장 실증·검증 착수, 2026.12 S2 완료 목표","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1,"asis_cnt":8591,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.29,"tobe_cnt":8591,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":8591,"tobe_mh":2491.4,"base_fte":4.3,"found_fte":3.05,"secured_fte":null,"secured_basis":null,"s1_date":"2026-07-22","s2_date":"2026-12-12","s3_date":"2027-04-01","s3_fte":1.3,"s3_kpi":null,"s4_date":"2027-07-05","s4_fte":2.06,"s4_kpi":null,"s5_date":"2027-09-15","s5_fte":3.05,"s5_kpi":null,"plan_start":"2026-05-26","plan_end":"2027-09-15","act_start":"2026-05-31","act_end":null,"pkms":"등록","pkms_name":"포장 자동화-자동 포장·라벨링","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산2팀","group":"포장그룹","cat":"포장 자동화","task":"출하 검수 바코드 자동화","kind":"FA","agent":"X","scope":"공장 전체","line":"출하장","tgt_dept":"생산2팀","tgt_ids":"lee.sh","dev_dept":"스마트팩토리팀","dev_ids":"kim.mj","mgmt":"D","kpi":"출하 리드타임","kpi_etc":null,"kpi_etc_unit":null,"unit":"시간","stage":"S4","next_plan":"S5 표준화·확산 착수, 2026.10 S4 완료 목표","kpi_asis":3,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":1,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":2,"kpi_secured":0.78,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.25,"asis_cnt":72230,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.11,"tobe_cnt":72230,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":18057.5,"tobe_mh":7945.3,"base_fte":9.03,"found_fte":5.06,"secured_fte":1.98,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-10-21","s2_date":"2026-03-22","s3_date":"2026-07-16","s3_fte":2.09,"s3_kpi":0.83,"s4_date":"2026-10-26","s4_fte":3.65,"s4_kpi":1.44,"s5_date":"2027-01-10","s5_fte":5.06,"s5_kpi":2,"plan_start":"2025-08-22","plan_end":"2027-01-10","act_start":"2025-09-21","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"생산2팀","group":"포장그룹","cat":"생산 실적","task":"작업일보 자동 작성 Agent","kind":"AX","agent":"O","scope":"팀 업무","line":"생산관리","tgt_dept":"생산2팀","tgt_ids":"lee.sh","dev_dept":"DX추진팀","dev_ids":"yoon.ej;han.ys;kang.sb","mgmt":"M","kpi":"반복업무 비중","kpi_etc":null,"kpi_etc_unit":null,"unit":"%","stage":"S1","next_plan":"S1 지연 만회: 모델 정확도 개선 후 2026.12 완료 예정","kpi_asis":35,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":15,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":20,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.5,"asis_cnt":12034,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.27,"tobe_cnt":12034,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":6017.0,"tobe_mh":3249.2,"base_fte":3.01,"found_fte":1.38,"secured_fte":null,"secured_basis":null,"s1_date":"2026-08-10","s2_date":"2027-01-21","s3_date":"2027-05-26","s3_fte":0.6,"s3_kpi":8.71,"s4_date":"2027-09-13","s4_fte":0.93,"s4_kpi":13.38,"s5_date":"2027-12-04","s5_fte":1.38,"s5_kpi":20,"plan_start":"2026-06-06","plan_end":"2027-12-04","act_start":"2026-05-30","act_end":null,"pkms":"등록","pkms_name":"생산 실적-작업일보 자동 작성 Agent","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"설비보전팀","group":"예방보전그룹","cat":"예지보전","task":"진동 기반 고장 예측","kind":"AX","agent":"X","scope":"공장 전체","line":"주요 설비 42대","tgt_dept":"설비보전팀","tgt_ids":"han.ys","dev_dept":"AI솔루션그룹","dev_ids":"lee.sh;seo.hr","mgmt":"D","kpi":"설비 비가동","kpi_etc":null,"kpi_etc_unit":null,"unit":"시간","stage":"S4","next_plan":"S5 표준화·확산 착수, 2026.11 S4 완료 목표","kpi_asis":320,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":150,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":170,"kpi_secured":48.77,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":3,"asis_cnt":887,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":1.61,"tobe_cnt":887,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":2661,"tobe_mh":1428.1,"base_fte":1.33,"found_fte":0.62,"secured_fte":0.18,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2026-02-04","s2_date":"2026-06-06","s3_date":"2026-09-08","s3_fte":0.21,"s3_kpi":57.93,"s4_date":"2026-11-28","s4_fte":0.49,"s4_kpi":135.64,"s5_date":"2027-01-29","s5_fte":0.62,"s5_kpi":170,"plan_start":"2025-12-18","plan_end":"2027-01-29","act_start":"2025-12-20","act_end":null,"pkms":"등록","pkms_name":"예지보전-진동 기반 고장 예측","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"설비보전팀","group":"예방보전그룹","cat":"예지보전","task":"보전 이력 검색 Agent","kind":"AX","agent":"O","scope":"팀 업무","line":"보전 이력 관리","tgt_dept":"설비보전팀","tgt_ids":"yoon.ej;park.jy","dev_dept":"DX추진팀","dev_ids":"lee.sh","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S4","next_plan":"S5 표준화·확산 착수, 2026.11 S4 완료 목표","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":4,"asis_cnt":5415,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":1.25,"tobe_cnt":5415,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":21660,"tobe_mh":6768.8,"base_fte":10.83,"found_fte":7.45,"secured_fte":3.05,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2026-01-21","s2_date":"2026-05-20","s3_date":"2026-08-20","s3_fte":2.97,"s3_kpi":null,"s4_date":"2026-11-07","s4_fte":5.08,"s4_kpi":null,"s5_date":"2027-01-06","s5_fte":7.45,"s5_kpi":null,"plan_start":"2025-12-05","plan_end":"2027-01-06","act_start":"2025-12-03","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"설비보전팀","group":"예방보전그룹","cat":"설비 관리","task":"스마트 점검 앱","kind":"FA","agent":"X","scope":"공장 전체","line":"일상점검","tgt_dept":"설비보전팀","tgt_ids":"yoon.ej","dev_dept":"스마트팩토리팀","dev_ids":"seo.hr;choi.dw;lee.sh","mgmt":"S","kpi":"점검 누락","kpi_etc":null,"kpi_etc_unit":null,"unit":"건","stage":"S2","next_plan":"S3 현장 실증·검증 착수, 2027.01 S2 완료 목표","kpi_asis":30,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":5,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":25,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1,"asis_cnt":4377,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.29,"tobe_cnt":4377,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":4377,"tobe_mh":1269.3,"base_fte":2.19,"found_fte":1.55,"secured_fte":null,"secured_basis":null,"s1_date":"2026-08-19","s2_date":"2027-01-09","s3_date":"2027-04-28","s3_fte":0.6,"s3_kpi":9.58,"s4_date":"2027-07-31","s4_fte":1.11,"s4_kpi":17.94,"s5_date":"2027-10-11","s5_fte":1.55,"s5_kpi":25,"plan_start":"2026-06-24","plan_end":"2027-10-11","act_start":"2026-07-09","act_end":null,"pkms":"등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"설비보전팀","group":"예방보전그룹","cat":"설비 관리","task":"예비품 재고 최적화","kind":"AX","agent":"X","scope":"팀 업무","line":"예비품 창고","tgt_dept":"설비보전팀","tgt_ids":"lee.sh","dev_dept":"DX추진팀","dev_ids":"kang.sb;han.ys","mgmt":"C","kpi":"예비품 재고","kpi_etc":null,"kpi_etc_unit":null,"unit":"백만원","stage":"S2","next_plan":"S3 현장 실증·검증 착수, 2027.01 S2 완료 목표","kpi_asis":900,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":700,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":200,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":2,"asis_cnt":1424,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.99,"tobe_cnt":1424,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":2848,"tobe_mh":1409.8,"base_fte":1.42,"found_fte":0.72,"secured_fte":null,"secured_basis":null,"s1_date":"2026-08-05","s2_date":"2027-01-02","s3_date":"2027-04-28","s3_fte":0.24,"s3_kpi":66.06,"s4_date":"2027-08-06","s4_fte":0.47,"s4_kpi":132.02,"s5_date":"2027-10-21","s5_fte":0.72,"s5_kpi":200,"plan_start":"2026-06-06","plan_end":"2027-10-21","act_start":"2026-06-08","act_end":null,"pkms":"등록","pkms_name":"설비 관리-예비품 재고 최적화","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"경영지원팀","group":"구매그룹","cat":"구매 업무","task":"발주서 자동 생성 RPA","kind":"AX","agent":"X","scope":"팀 업무","line":"구매 발주","tgt_dept":"경영지원팀","tgt_ids":"yoon.ej","dev_dept":"DX추진팀","dev_ids":"lim.th","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S3","next_plan":"S4 정식 업무 적용 착수, 2027.02 S3 완료 목표","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":4,"asis_cnt":3151,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":1.82,"tobe_cnt":3151,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":12604,"tobe_mh":5734.8,"base_fte":6.3,"found_fte":3.43,"secured_fte":null,"secured_basis":null,"s1_date":"2026-04-20","s2_date":"2026-10-05","s3_date":"2027-02-11","s3_fte":0.91,"s3_kpi":null,"s4_date":"2027-06-03","s4_fte":2.64,"s4_kpi":null,"s5_date":"2027-08-26","s5_fte":3.43,"s5_kpi":null,"plan_start":"2026-02-12","plan_end":"2027-08-26","act_start":"2026-02-04","act_end":null,"pkms":"등록","pkms_name":"구매 업무-발주서 자동 생성 RPA","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"경영지원팀","group":"구매그룹","cat":"구매 업무","task":"협력사 납기 회신 Agent","kind":"AX","agent":"O","scope":"팀 업무","line":"협력사 관리","tgt_dept":"경영지원팀","tgt_ids":"kim.mj;shin.wj","dev_dept":"AI솔루션그룹","dev_ids":"seo.hr","mgmt":"D","kpi":"납기 준수율","kpi_etc":null,"kpi_etc_unit":null,"unit":"%","stage":"S4","next_plan":"S5 표준화·확산 착수, 2026.11 S4 완료 목표","kpi_asis":88,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"증가","kpi_tobe":97,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":9,"kpi_secured":2.48,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1,"asis_cnt":6046,"asis_ppl":2,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.44,"tobe_cnt":6046,"tobe_ppl":2,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":12092,"tobe_mh":5320.5,"base_fte":6.05,"found_fte":3.39,"secured_fte":0.93,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2026-03-24","s2_date":"2026-07-01","s3_date":"2026-09-14","s3_fte":1.04,"s3_kpi":2.76,"s4_date":"2026-11-19","s4_fte":2.64,"s4_kpi":7.03,"s5_date":"2027-01-08","s5_fte":3.39,"s5_kpi":9,"plan_start":"2026-02-13","plan_end":"2027-01-08","act_start":"2026-02-21","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"경영지원팀","group":"구매그룹","cat":"구매 업무","task":"단가 비교 분석 자동화","kind":"AX","agent":"X","scope":"팀 업무","line":"구매 단가","tgt_dept":"경영지원팀","tgt_ids":"kim.mj","dev_dept":"DX추진팀","dev_ids":"park.jy;choi.dw;oh.jk","mgmt":"C","kpi":"기타","kpi_etc":"협상 준비시간","kpi_etc_unit":null,"unit":"시간","stage":"S5","next_plan":null,"kpi_asis":10,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":3,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":7,"kpi_secured":4.57,"kpi_secured_basis":"현장 실증 4주 측정값","kpi_realized":null,"kpi_realized_basis":null,"asis_hr":1,"asis_cnt":5022,"asis_ppl":2,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.22,"tobe_cnt":5022,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":10044,"tobe_mh":1104.8,"base_fte":5.02,"found_fte":4.47,"secured_fte":2.91,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-09-30","s2_date":"2026-03-01","s3_date":"2026-06-26","s3_fte":1.96,"s3_kpi":3.07,"s4_date":"2026-10-06","s4_fte":2.97,"s4_kpi":4.65,"s5_date":"2026-12-22","s5_fte":4.47,"s5_kpi":7,"plan_start":"2025-07-31","plan_end":"2026-12-22","act_start":"2025-08-20","act_end":null,"pkms":"등록","pkms_name":"구매 업무-단가 비교 분석 자동화","re_team":1,"re_team_date":"2026-11-05","re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"경영지원팀","group":"인사그룹","cat":"인사 업무","task":"교육이력 자동 집계","kind":"AX","agent":"X","scope":"팀 업무","line":"교육 관리","tgt_dept":"경영지원팀","tgt_ids":"seo.hr;oh.jk","dev_dept":"DX추진팀","dev_ids":"shin.wj;han.ys","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S2","next_plan":"S2 지연 만회: 모델 정확도 개선 후 2026.12 완료 예정","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.25,"asis_cnt":42305,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.14,"tobe_cnt":42305,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":10576.2,"tobe_mh":5922.7,"base_fte":5.29,"found_fte":2.33,"secured_fte":null,"secured_basis":null,"s1_date":"2026-06-19","s2_date":"2026-10-05","s3_date":"2026-12-26","s3_fte":0.65,"s3_kpi":null,"s4_date":"2027-03-08","s4_fte":1.68,"s4_kpi":null,"s5_date":"2027-05-01","s5_fte":2.33,"s5_kpi":null,"plan_start":"2026-05-08","plan_end":"2027-05-01","act_start":"2026-05-06","act_end":null,"pkms":"미등록","pkms_name":null,"re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"경영지원팀","group":"인사그룹","cat":"인사 업무","task":"사내 규정 Q&A Agent","kind":"AX","agent":"O","scope":"팀 업무","line":"인사 문의","tgt_dept":"경영지원팀","tgt_ids":"seo.hr","dev_dept":"DX추진팀","dev_ids":"choi.dw","mgmt":"M","kpi":"문의 응답시간","kpi_etc":null,"kpi_etc_unit":null,"unit":"시간","stage":"S2","next_plan":"S3 현장 실증·검증 착수, 2026.12 S2 완료 목표","kpi_asis":24,"kpi_asis_basis":"2025년 1~12월 MES·현업 집계 평균","kpi_dir":"감소","kpi_tobe":2,"kpi_tobe_basis":"파일럿 결과 및 벤더 레퍼런스 기준","kpi_found":22,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":0.5,"asis_cnt":16792,"asis_ppl":2,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":0.12,"tobe_cnt":16792,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":16792.0,"tobe_mh":2015.0,"base_fte":8.4,"found_fte":7.39,"secured_fte":null,"secured_basis":null,"s1_date":"2026-08-16","s2_date":"2026-12-05","s3_date":"2027-02-28","s3_fte":3.01,"s3_kpi":8.95,"s4_date":"2027-05-13","s4_fte":5.73,"s4_kpi":17.05,"s5_date":"2027-07-08","s5_fte":7.39,"s5_kpi":22,"plan_start":"2026-07-03","plan_end":"2027-07-08","act_start":"2026-07-15","act_end":null,"pkms":"등록","pkms_name":"인사 업무-사내 규정 Q&A Agent","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null},{"asof":"2026-10-19","team":"경영지원팀","group":"인사그룹","cat":"원가 관리","task":"월 결산 자동화","kind":"AX","agent":"O","scope":"팀 업무","line":"월 결산","tgt_dept":"경영지원팀","tgt_ids":"lee.sh","dev_dept":"AI솔루션그룹","dev_ids":"han.ys","mgmt":"P","kpi":"공수 절감","kpi_etc":null,"kpi_etc_unit":null,"unit":"FTE","stage":"S4","next_plan":"S5 표준화·확산 착수, 2027.01 S4 완료 목표","kpi_asis":null,"kpi_asis_basis":null,"kpi_dir":null,"kpi_tobe":null,"kpi_tobe_basis":null,"kpi_found":null,"kpi_secured":null,"kpi_secured_basis":null,"kpi_realized":null,"kpi_realized_basis":null,"asis_hr":3,"asis_cnt":6783,"asis_ppl":1,"asis_basis":"2025년 작업일보·시스템 로그 기준","tobe_hr":1.35,"tobe_cnt":6783,"tobe_ppl":1,"tobe_basis":"개발 사양 및 파일럿 측정 기준","asis_mh":20349,"tobe_mh":9157.1,"base_fte":10.17,"found_fte":5.6,"secured_fte":1.21,"secured_basis":"실증 기간 공수 측정(MES 작업시간)","s1_date":"2025-11-21","s2_date":"2026-05-07","s3_date":"2026-09-13","s3_fte":1.69,"s3_kpi":null,"s4_date":"2027-01-02","s4_fte":3.67,"s4_kpi":null,"s5_date":"2027-03-27","s5_fte":5.6,"s5_kpi":null,"plan_start":"2025-09-16","plan_end":"2027-03-27","act_start":"2025-09-20","act_end":null,"pkms":"등록","pkms_name":"원가 관리-월 결산 자동화","re_team":null,"re_team_date":null,"re_line":null,"re_line_date":null,"re_etc":null,"re_etc_date":null}]</script>
+<script>
+(() => {
+const $ = (s) => document.querySelector(s);
+const el = (tag, props = {}, ...kids) => {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props)) {
+    if (k === 'class') e.className = v; else if (k === 'style') e.style.cssText = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v != null) e.setAttribute(k, v);
+  }
+  for (const c of kids.flat()) if (c != null) e.append(c instanceof Node ? c : String(c));
+  return e;
+};
+const f1 = (v) => v == null || isNaN(v) ? '—' : d3.format(',.1f')(v);
+const f0 = (v) => v == null || isNaN(v) ? '—' : d3.format(',')(Math.round(v));
+const pct = (v) => v == null || !isFinite(v) ? '—' : d3.format('.0%')(v);
+const fnum = (v) => v == null ? '—' : d3.format(',')(+(+v).toFixed(2));
+const STAGES = ['후보 발굴·타당성', '개발·구현', '현장 실증·검증', '정식 업무 적용', '표준화·확산'];
+const MGMT = { P: '생산성', Q: '품질', C: '원가', D: '납기', S: '안전', M: '사기' };
+
+// 양식 컬럼 ↔ 내부 키. [키, 엑셀 컬럼명, 구분, 형식]
+const SEC = ['01 조직·과제 정보', '02 필수 지표·KPI 선택', '03 과제 진행 현황', '04 최종 KPI 목표·확보·실현', '05 최종 FTE 목표·확보', '06 S1~S5 단계별 누적 확보 목표', '07 주요 추진 일정', '08 Process-PKMS', '09 FTE 실현·재배치'];
+const FIELDS = [
+  ['team', '* 팀', 0], ['group', '* 그룹', 0], ['cat', '* 과제명(대분류)', 0], ['task', '* 과제명(중분류)', 0], ['kind', '* 과제구분', 0],
+  ['agent', '* Agent 개발 포함 여부', 0], ['scope', '* 적용범위', 0], ['line', '* 적용범위(라인/공정)', 0],
+  ['tgt_dept', '* Target 담당 부서명', 0], ['tgt_ids', '* Target 담당자 ID', 0], ['dev_dept', '* 개발 부서명', 0], ['dev_ids', '* 개발부서 담당자 ID', 0],
+  ['mgmt', '* 경영관리지표', 1], ['kpi', '* KPI', 1], ['kpi_etc', '* [조건] 기타 KPI', 1], ['kpi_etc_unit', '* [조건] 기타 KPI 단위', 1], ['unit', 'KPI 단위 [자동]', 1, 'auto'],
+  ['stage', '* 진행단계', 2], ['next_plan', '* [조건] 다음 단계 추진계획', 2],
+  ['kpi_asis', '* [P외] KPI AS-IS 현재 수준', 3, 'n'], ['kpi_asis_basis', '* [P외] KPI AS-IS 산정근거', 3], ['kpi_dir', '* [P외] KPI 개선방향', 3],
+  ['kpi_tobe', '* [P외] KPI TO-BE 목표 수준', 3, 'n'], ['kpi_tobe_basis', '* [P외] KPI TO-BE 산정근거', 3], ['kpi_found', 'KPI 발굴 효과 [자동]', 3, 'auto'],
+  ['kpi_secured', 'KPI 확보 효과(현재까지)', 3, 'n'], ['kpi_secured_basis', '* [조건] KPI 확보 효과 산정근거', 3],
+  ['kpi_realized', 'KPI 실현 효과', 3, 'n'], ['kpi_realized_basis', '* [조건] KPI 실현 효과 산정근거', 3],
+  ['asis_hr', '* AS-IS 1인당 건당 소요시간(시간)', 4, 'n'], ['asis_cnt', '* AS-IS 연간 처리건수', 4, 'n'], ['asis_ppl', '* AS-IS 투입인원', 4, 'n'], ['asis_basis', '* AS-IS 공수 산정근거', 4],
+  ['tobe_hr', '* TO-BE 1인당 건당 소요시간(시간)', 4, 'n'], ['tobe_cnt', '* TO-BE 연간 처리건수', 4, 'n'], ['tobe_ppl', '* TO-BE 투입인원', 4, 'n'], ['tobe_basis', '* TO-BE 공수 산정근거', 4],
+  ['asis_mh', 'AS-IS 연간 공수(MH) [자동]', 4, 'auto'], ['tobe_mh', 'TO-BE 연간 공수(MH) [자동]', 4, 'auto'], ['base_fte', 'Baseline FTE [자동]', 4, 'auto'], ['found_fte', '발굴 FTE [자동]', 4, 'auto'],
+  ['secured_fte', '확보 FTE(현재까지)', 4, 'n'], ['secured_basis', '* [조건] 확보 FTE 산정근거', 4],
+  ['s1_date', '* S1 목표일정', 5, 'd'], ['s2_date', '* S2 목표일정', 5, 'd'], ['s3_date', '* S3 목표일정', 5, 'd'], ['s3_fte', '* S3 누적 확보 목표 효과(FTE)', 5, 'n'], ['s3_kpi', '* [P외] S3 누적 확보 목표 효과(KPI)', 5, 'n'],
+  ['s4_date', '* S4 목표일정', 5, 'd'], ['s4_fte', '* S4 누적 확보 목표 효과(FTE)', 5, 'n'], ['s4_kpi', '* [P외] S4 누적 확보 목표 효과(KPI)', 5, 'n'],
+  ['s5_date', '* S5 목표일정', 5, 'd'], ['s5_fte', '* S5 누적 확보 목표 효과(FTE)', 5, 'n'], ['s5_kpi', '* [P외] S5 누적 확보 목표 효과(KPI)', 5, 'n'],
+  ['plan_start', '* 계획 시작일', 6, 'd'], ['plan_end', '* 계획 종료일', 6, 'd'], ['act_start', '* [조건] 실적 시작일', 6, 'd'], ['act_end', '* [조건] 실적 종료일', 6, 'd'],
+  ['pkms', '* Process-PKMS 등록여부', 7], ['pkms_name', '* [조건] Process-PKMS 과제명', 7],
+  ['re_team', '팀내 업무 재배치 인원(명)', 8, 'n'], ['re_team_date', '팀내 업무 재배치 일정', 8, 'd'], ['re_line', '신규라인 재배치 인원(명)', 8, 'n'], ['re_line_date', '신규라인 재배치 일정', 8, 'd'],
+  ['re_etc', '기타 실현 인원(휴직/파견 등)(명)', 8, 'n'], ['re_etc_date', '기타 실현 일정', 8, 'd'],
+];
+const label = Object.fromEntries(FIELDS.map(([k, h]) => [k, h.replace(/^\*\s*/, '')]));
+const norm = (h) => String(h ?? '').replace(/^\s*\*\s*/, '').replace(/\s+/g, '');
+const byHeader = new Map(FIELDS.map(([k, h]) => [norm(h), k]));
+
+const isoDate = (v) => {
+  if (v == null || v === '') return null;
+  if (v instanceof Date) { const d = new Date(v.getTime() + 6 * 3600e3); return d3.timeFormat('%Y-%m-%d')(d); }
+  if (typeof v === 'number') { const d = new Date(Date.UTC(1899, 11, 30) + v * 864e5); return d3.utcFormat('%Y-%m-%d')(d); }
+  const m = String(v).trim().match(/^(\d{4})[-./](\d{1,2})[-./](\d{1,2})/);
+  return m ? `${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}` : null;
+};
+const num = (v) => { if (v == null || v === '') return null; const n = +String(v).replace(/,/g, ''); return isNaN(n) ? null : n; };
+const txt = (v) => v == null || String(v).trim() === '' ? null : String(v).trim();
+
+// 행 하나를 정규화하고, 양식의 [자동] 항목을 같은 식으로 다시 계산
+function normalize(r) {
+  const o = {};
+  for (const [k, , , t] of FIELDS) o[k] = t === 'n' ? num(r[k]) : t === 'd' ? isoDate(r[k]) : t === 'auto' ? r[k] : txt(r[k]);
+  o.stage = o.stage ? 'S' + String(o.stage).replace(/\D/g, '').slice(0, 1) : null;
+  o.mgmt = o.mgmt ? o.mgmt.toUpperCase().slice(0, 1) : null;
+  o.kind = o.kind || '미지정';
+  const mh = (h, c, p) => h != null && c != null && p != null ? h * c * p : null;
+  o.asis_mh = mh(o.asis_hr, o.asis_cnt, o.asis_ppl);
+  o.tobe_mh = mh(o.tobe_hr, o.tobe_cnt, o.tobe_ppl);
+  o.base_fte = o.asis_mh != null ? o.asis_mh / 2000 : null;
+  o.found_fte = o.asis_mh != null && o.tobe_mh != null ? (o.asis_mh - o.tobe_mh) / 2000 : null;
+  o.unit = o.kpi === '기타' ? o.kpi_etc_unit : (txt(r.unit) ?? (o.mgmt === 'P' ? 'FTE' : null));
+  o.kpi_found = o.mgmt !== 'P' && o.kpi_asis != null && o.kpi_tobe != null
+    ? (o.kpi_dir === '증가' ? o.kpi_tobe - o.kpi_asis : o.kpi_asis - o.kpi_tobe) : null;
+  return o;
+}
+
+// 기준일에 따라 달라지는 상태와 점검 결과
+function derive(o, asof) {
+  const idx = o.stage ? +o.stage.slice(1) : 0;
+  const done = idx === 5 && !!o.act_end;
+  const due = idx ? o[`s${idx}_date`] : null;
+  const delayed = !done && !!due && due < asof;
+  const passed = [5, 4, 3].find((s) => o[`s${s}_date`] && o[`s${s}_date`] <= asof);
+  const target_now = passed ? (o[`s${passed}_fte`] ?? 0) : 0;
+  const realized = (o.re_team ?? 0) + (o.re_line ?? 0) + (o.re_etc ?? 0);
+  const status = done ? '완료' : delayed ? '지연' : (o.plan_start && o.plan_start > asof && !o.act_start ? '착수 전' : '진행');
+  const lagging = target_now > 0 && (o.secured_fte ?? 0) < target_now * 0.8;
+  return { ...o, idx, done, due, delayed, target_now, realized, status, lagging,
+    late_days: delayed ? Math.round((new Date(asof) - new Date(due)) / 864e5) : 0,
+    kpi_prog: o.kpi_found ? (o.kpi_secured ?? 0) / o.kpi_found : null, issues: validate(o, idx) };
+}
+
+function validate(o, idx) {
+  const out = [];
+  const miss = (k, rule) => { if (o[k] == null || o[k] === '') out.push({ level: '누락', field: label[k], rule }); };
+  const P = o.mgmt === 'P';
+  for (const [k, h, , t] of FIELDS) {
+    if (!h.startsWith('*') || h.includes('[조건]') || h.includes('[P외]') || t === 'auto') continue;
+    miss(k, '공통 필수');
+  }
+  if (o.kpi === '기타') { miss('kpi_etc', 'KPI 기타 선택 시'); miss('kpi_etc_unit', 'KPI 기타 선택 시'); }
+  if (idx >= 1 && idx <= 4) miss('next_plan', 'S1~S4 진행 시');
+  if (!P) for (const k of ['kpi_asis', 'kpi_asis_basis', 'kpi_dir', 'kpi_tobe', 'kpi_tobe_basis', 's3_kpi', 's4_kpi', 's5_kpi']) miss(k, 'P 외 지표');
+  if (o.kpi_secured != null) miss('kpi_secured_basis', 'KPI 확보 효과 입력 시');
+  if (o.kpi_realized != null) miss('kpi_realized_basis', 'KPI 실현 효과 입력 시');
+  if (o.secured_fte != null) miss('secured_basis', '확보 FTE 입력 시');
+  if (o.pkms === '등록') miss('pkms_name', 'PKMS 등록 시');
+  if (idx >= 2) miss('act_start', 'S2 이상 진행(착수) 시');
+  if (o.act_end) { if (idx !== 5) out.push({ level: '확인', field: label.act_end, rule: '실적 종료일이 있으나 S5가 아님' }); }
+  const ds = [1, 2, 3, 4, 5].map((s) => o[`s${s}_date`]);
+  for (let i = 1; i < 5; i++) if (ds[i - 1] && ds[i] && ds[i] < ds[i - 1]) out.push({ level: '확인', field: `S${i + 1} 목표일정`, rule: `S${i} 목표일보다 빠름` });
+  const fs = [o.s3_fte, o.s4_fte, o.s5_fte];
+  if ((fs[0] != null && fs[1] != null && fs[1] < fs[0]) || (fs[1] != null && fs[2] != null && fs[2] < fs[1])) out.push({ level: '확인', field: '누적 확보 목표(FTE)', rule: 'S3→S4→S5 누적값이 줄어듦' });
+  if (o.s5_fte != null && o.found_fte != null && o.s5_fte > o.found_fte + 0.01) out.push({ level: '확인', field: label.s5_fte, rule: '발굴 FTE보다 큼' });
+  if (o.secured_fte != null && o.found_fte != null && o.secured_fte > o.found_fte + 0.01) out.push({ level: '확인', field: label.secured_fte, rule: '발굴 FTE보다 큼' });
+  const rel = (o.re_team ?? 0) + (o.re_line ?? 0) + (o.re_etc ?? 0);
+  if (rel > Math.floor((o.secured_fte ?? 0) + 1e-9)) out.push({ level: '확인', field: '실현 인원', rule: '확보 FTE보다 많음' });
+  for (const [n, d] of [['re_team', 're_team_date'], ['re_line', 're_line_date'], ['re_etc', 're_etc_date']]) if (o[n] && !o[d]) out.push({ level: '누락', field: label[d], rule: '재배치 인원 입력 시' });
+  return out;
+}
+
+// 상태
+const state = { rows: [], source: '', asof: '', team: '전체', kind: '전체', tab: 'overview', q: '', stage: null, sort: { key: 'found_fte', dir: -1 }, sel: null, rule: null };
+let ALL = [];
+const sample = JSON.parse(document.getElementById('sample-data').textContent || '[]');
+
+function load(rows, source, asof) {
+  state.rows = rows.map(normalize).filter((r) => r.task);
+  state.source = source;
+  state.asof = asof || d3.timeFormat('%Y-%m-%d')(new Date());
+  state.team = '전체'; state.kind = '전체'; state.stage = null; state.sel = null; state.rule = null;
+  $('#f-asof').value = state.asof;
+  render();
+}
+
+function view() {
+  ALL = state.rows.map((r) => derive(r, state.asof));
+  return ALL.filter((r) => (state.team === '전체' || r.team === state.team) && (state.kind === '전체' || r.kind === state.kind));
+}
+const sum = (rs, k) => d3.sum(rs, (r) => r[k] ?? 0);
+const stColor = (i) => `var(--st${i})`;
+
+function render() {
+  const rs = view();
+  const teams = [...new Set(state.rows.map((r) => r.team).filter(Boolean))];
+  const kinds = [...new Set(state.rows.map((r) => r.kind))];
+  fillSelect($('#f-team'), ['전체', ...teams], state.team, (v) => v === '전체' ? '전체 팀' : v);
+  fillSelect($('#f-kind'), ['전체', ...kinds], state.kind, (v) => v === '전체' ? '전체 구분' : v);
+  $('#src').textContent = `${state.source} · ${state.rows.length}개 과제 · 기준일 ${state.asof}`;
+  const issueRows = rs.filter((r) => r.issues.length);
+  $('#cnt-list').textContent = rs.length;
+  $('#cnt-check').textContent = issueRows.length || '';
+  takeaway(rs);
+  if (state.tab === 'overview') { tiles(rs); flow(rs); pipe(rs); curve(rs); teamBars(); mgmt(rs); watch(rs); }
+  if (state.tab === 'schedule') gantt(rs);
+  if (state.tab === 'list') { table(rs); detail(); }
+  if (state.tab === 'check') check(rs);
+}
+
+function fillSelect(sel, vals, cur, lab) {
+  if (sel.dataset.v !== vals.join('|')) { sel.replaceChildren(...vals.map((v) => new Option(lab(v), v))); sel.dataset.v = vals.join('|'); }
+  sel.value = cur;
+}
+
+function takeaway(rs) {
+  const box = $('#take');
+  if (!rs.length) { box.textContent = '조건에 맞는 과제가 없습니다.'; return; }
+  const found = sum(rs, 'found_fte'), sec = sum(rs, 'secured_fte'), tgt = sum(rs, 'target_now'), dl = rs.filter((r) => r.delayed).length;
+  const scope = [state.team !== '전체' ? state.team : '전체', state.kind !== '전체' ? state.kind : null].filter(Boolean).join(' ');
+  const r = tgt ? sec / tgt : null;
+  box.replaceChildren(...[
+    `${scope} ${rs.length}개 과제가 발굴한 `, el('b', {}, `${f1(found)} FTE`), ` 중 `, el('b', {}, `${f1(sec)} FTE(${pct(found ? sec / found : null)})`), `를 확보했습니다. `,
+    tgt ? [`기준일까지 도래한 누적 목표 ${f1(tgt)} FTE 대비 `, el('b', { class: r >= 1 ? 'c-ok' : r >= 0.8 ? 'c-warn' : 'c-bad' }, pct(r)), '이고, '] : '아직 누적 확보 목표가 도래한 과제가 없고, ',
+    dl ? ['현재 단계 목표일을 넘긴 과제가 ', el('b', { class: 'c-bad' }, `${dl}건`), ' 있습니다.'] : '일정이 지연된 과제는 없습니다.'].flat());
+}
+
+function tiles(rs) {
+  const found = sum(rs, 'found_fte'), base = sum(rs, 'base_fte'), sec = sum(rs, 'secured_fte'), tgt = sum(rs, 'target_now'), real = sum(rs, 'realized');
+  const dl = rs.filter((r) => r.delayed), iss = rs.filter((r) => r.issues.length);
+  const cnt = d3.rollup(rs, (v) => v.length, (r) => r.status);
+  const r = tgt ? sec / tgt : null;
+  const tile = (lab, big, unit, sub, cls = '') => el('div', { class: 'tile ' + cls }, el('span', { class: 'lab' }, lab), el('span', { class: 'big' }, big, unit ? el('small', {}, unit) : null), el('span', { class: 'sub' }, sub));
+  $('#tiles').replaceChildren(
+    tile('등록 과제', f0(rs.length), '건', `완료 ${cnt.get('완료') ?? 0} · 진행 ${(cnt.get('진행') ?? 0) + (cnt.get('지연') ?? 0)} · 착수 전 ${cnt.get('착수 전') ?? 0}`),
+    tile('발굴 FTE', f1(found), 'FTE', `Baseline ${f1(base)} FTE의 ${pct(base ? found / base : null)}를 줄이는 계획`),
+    tile('확보 FTE', f1(sec), 'FTE', [`발굴 대비 ${pct(found ? sec / found : null)} · `, el('span', { class: 'pill ' + (r == null ? 'c-mut' : r >= 1 ? 'c-ok' : r >= 0.8 ? 'c-warn' : 'c-bad') }, `기준일 목표 ${f1(tgt)} 대비 ${pct(r)}`)]),
+    tile('실현 인원', f0(real), '명', `확보 FTE 대비 ${pct(sec ? real / sec : null)} · 팀내 ${f0(sum(rs, 're_team'))} · 신규라인 ${f0(sum(rs, 're_line'))} · 기타 ${f0(sum(rs, 're_etc'))}`),
+    tile('일정 지연', f0(dl.length), '건', dl.length ? `최장 ${d3.max(dl, (d) => d.late_days)}일 경과 · 입력 보완 필요 ${iss.length}건` : `입력 보완 필요 ${iss.length}건`, dl.length ? 'alert' : ''),
+  );
+}
+
+function flow(rs) {
+  const base = sum(rs, 'base_fte'), found = sum(rs, 'found_fte'), sec = sum(rs, 'secured_fte'), real = sum(rs, 'realized'), tgt = sum(rs, 'target_now');
+  const mx = Math.max(base, 1e-9);
+  const row = (nm, v, unit, color, extra, fmt = f1) => el('div', { class: 'row' }, el('span', {}, nm),
+    el('div', { class: 'track' }, el('div', { class: 'bar', style: `width:${Math.min(100, v / mx * 100)}%;background:${color}` }), extra), el('span', { class: 'val' }, `${fmt(v)} ${unit}`));
+  const conv = (t) => el('div', { class: 'row' }, el('span'), el('span', { class: 'conv' }, t), el('span'));
+  $('#flow').replaceChildren(
+    row('Baseline', base, 'FTE', 'var(--soft)'),
+    conv(`↓ 발굴률 ${pct(base ? found / base : null)}`),
+    row('발굴', found, 'FTE', 'var(--found)'),
+    conv(`↓ 확보율 ${pct(found ? sec / found : null)}`),
+    row('확보', sec, 'FTE', 'var(--accent)', tgt ? el('div', { class: 'tgt', style: `left:${Math.min(100, tgt / mx * 100)}%`, title: `기준일 목표 ${f1(tgt)} FTE` }) : null),
+    conv(`${tgt ? `세로선: 기준일 누적 목표 ${f1(tgt)} FTE (달성 ${pct(sec / tgt)}) · ` : ''}↓ 실현율 ${pct(sec ? real / sec : null)}`),
+    row('실현', real, '명', 'var(--real)', null, f0),
+  );
+  $('#flow').firstChild.querySelector('.bar').style.outline = '1px solid var(--line)';
+}
+
+function pipe(rs) {
+  const by = d3.group(rs, (r) => r.idx);
+  const mx = d3.max([1, 2, 3, 4, 5], (i) => (by.get(i) ?? []).length) || 1;
+  $('#pipe').replaceChildren(...[1, 2, 3, 4, 5].map((i) => {
+    const g = by.get(i) ?? [], dl = g.filter((r) => r.delayed).length, dn = g.filter((r) => r.done).length;
+    return el('button', { class: 'stg', type: 'button', 'aria-label': `S${i} 과제 ${g.length}건 보기`, onclick: () => { state.stage = i; setTab('list'); } },
+      el('span', { class: 'nm' }, el('b', {}, `S${i}`), STAGES[i - 1]),
+      el('span', { class: 'col' }, el('div', { style: `height:${g.length / mx * 100}%;background:${stColor(i)}` })),
+      el('span', {}, el('div', { class: 'n' }, g.length), el('div', { class: 'f' }, `${f1(sum(g, 'found_fte'))} FTE`),
+        el('div', { class: 'd' }, dl ? `지연 ${dl}` : i === 5 && dn ? el('span', { class: 'c-ok' }, `완료 ${dn}`) : '')));
+  }));
+}
+
+function tooltip(box) {
+  let t = box.querySelector('.tip');
+  if (!t) { t = el('div', { class: 'tip', hidden: '' }); box.append(t); }
+  return {
+    show(ev, parts) {
+      t.replaceChildren(...parts); t.hidden = false;
+      const b = box.getBoundingClientRect(), w = t.offsetWidth, h = t.offsetHeight;
+      let x = ev.clientX - b.left + 12, y = ev.clientY - b.top + 12;
+      if (x + w > b.width) x = ev.clientX - b.left - w - 12;
+      if (y + h > box.scrollHeight) y = ev.clientY - b.top - h - 12;
+      t.style.left = Math.max(0, x) + 'px'; t.style.top = Math.max(0, y) + 'px';
+    },
+    hide() { t.hidden = true; },
+  };
+}
+
+function curve(rs) {
+  const box = $('#curve'); box.replaceChildren();
+  const W = box.clientWidth; if (!W) return;
+  const pts = rs.filter((r) => r.s5_date);
+  if (!pts.length) { box.append(el('p', { class: 'empty' }, '목표일정이 입력된 과제가 없습니다.')); return; }
+  const p = d3.timeParse('%Y-%m-%d'), asof = p(state.asof);
+  const lo = d3.timeMonth.floor(d3.min(pts, (r) => p(r.plan_start || r.s1_date) ?? asof));
+  const hi = d3.timeMonth.ceil(d3.timeDay.offset(d3.max([...pts.map((r) => p(r.s5_date)), asof]), 1));
+  const months = d3.timeMonth.range(lo, d3.timeMonth.offset(hi, 1));
+  const target = months.map((m) => {
+    const end = d3.timeDay.offset(d3.timeMonth.offset(m, 1), -1), e = d3.timeFormat('%Y-%m-%d')(end);
+    return { m, v: d3.sum(pts, (r) => { const s = [5, 4, 3].find((k) => r[`s${k}_date`] && r[`s${k}_date`] <= e); return s ? r[`s${s}_fte`] ?? 0 : 0; }) };
+  });
+  const found = sum(rs, 'found_fte'), sec = sum(rs, 'secured_fte'), tgt = sum(rs, 'target_now');
+  const H = 270, m = { t: 22, r: 16, b: 26, l: 40 };
+  const x = d3.scaleTime([lo, hi], [m.l, W - m.r]);
+  const y = d3.scaleLinear([0, Math.max(found, sec) * 1.08 || 1], [H - m.b, m.t]).nice();
+  const svg = d3.select(box).append('svg').attr('width', '100%').attr('viewBox', `0 0 ${W} ${H}`).attr('height', H);
+  svg.append('g').attr('class', 'grid').selectAll('line').data(y.ticks(5)).join('line').attr('x1', m.l).attr('x2', W - m.r).attr('y1', y).attr('y2', y);
+  svg.append('g').attr('transform', `translate(${m.l - 6},0)`).selectAll('text').data(y.ticks(5)).join('text').attr('y', y).attr('dy', '0.32em').attr('text-anchor', 'end').text(d3.format(','));
+  const nt = Math.max(2, Math.floor((W - m.l - m.r) / 70));
+  svg.append('g').attr('class', 'axis').attr('transform', `translate(0,${H - m.b})`).call(d3.axisBottom(x).ticks(nt).tickFormat(d3.timeFormat('%y.%m')).tickSizeOuter(0)).attr('font-size', null).attr('font-family', null);
+  svg.append('line').attr('x1', m.l).attr('x2', W - m.r).attr('y1', y(found)).attr('y2', y(found)).attr('stroke', 'var(--muted)').attr('stroke-dasharray', '4 4');
+  svg.append('text').attr('x', W - m.r).attr('y', y(found) - 6).attr('text-anchor', 'end').text(`발굴 FTE 총량 ${f1(found)}`);
+  const step = target.map((d) => ({ x: d.m, v: d.v })).concat([{ x: hi, v: target.at(-1).v }]);
+  svg.append('path').datum(step).attr('fill', 'var(--accent)').attr('fill-opacity', 0.08).attr('d', d3.area().curve(d3.curveStepAfter).x((d) => x(d.x)).y0(y(0)).y1((d) => y(d.v)));
+  svg.append('path').datum(step).attr('fill', 'none').attr('stroke', 'var(--accent)').attr('stroke-width', 2).attr('stroke-linejoin', 'round').attr('d', d3.line().curve(d3.curveStepAfter).x((d) => x(d.x)).y((d) => y(d.v)));
+  svg.append('line').attr('x1', x(asof)).attr('x2', x(asof)).attr('y1', m.t - 8).attr('y2', H - m.b).attr('stroke', 'var(--fg)').attr('stroke-width', 1);
+  svg.append('text').attr('x', x(asof)).attr('y', m.t - 12).attr('text-anchor', x(asof) > W - 80 ? 'end' : 'middle').attr('style', 'fill:var(--fg)').text('기준일');
+  const r = tgt ? sec / tgt : null, col = r == null ? 'var(--accent)' : r >= 1 ? 'var(--ok)' : r >= 0.8 ? 'var(--warn)' : 'var(--bad)';
+  if (tgt) svg.append('circle').attr('cx', x(asof)).attr('cy', y(tgt)).attr('r', 4).attr('fill', 'var(--panel)').attr('stroke', 'var(--accent)').attr('stroke-width', 2);
+  svg.append('circle').attr('cx', x(asof)).attr('cy', y(sec)).attr('r', 6).attr('fill', col);
+  const left = x(asof) > W * 0.6;
+  svg.append('text').attr('x', x(asof) + (left ? -10 : 10)).attr('y', y(sec)).attr('dy', '0.32em').attr('text-anchor', left ? 'end' : 'start').attr('style', `fill:${col};font-weight:600`).text(`확보 ${f1(sec)} FTE (목표 대비 ${pct(r)})`);
+  const tip = tooltip(box), dot = svg.append('circle').attr('r', 4).attr('fill', 'var(--accent)').style('display', 'none');
+  svg.append('rect').attr('x', m.l).attr('y', m.t).attr('width', W - m.l - m.r).attr('height', H - m.t - m.b).attr('fill', 'transparent')
+    .on('mousemove', (ev) => {
+      const d = target[Math.max(0, d3.bisector((d) => d.m).right(target, x.invert(d3.pointer(ev)[0])) - 1)];
+      dot.style('display', null).attr('cx', x(d.m)).attr('cy', y(d.v));
+      tip.show(ev, [el('div', { class: 't' }, d3.timeFormat('%Y년 %m월')(d.m)), el('div', {}, `누적 확보 목표 ${f1(d.v)} FTE`), el('div', { class: 't' }, `발굴 대비 ${pct(found ? d.v / found : null)}`)]);
+    })
+    .on('mouseleave', () => { tip.hide(); dot.style('display', 'none'); });
+}
+
+function teamBars() {
+  const rs = ALL.filter((r) => state.kind === '전체' || r.kind === state.kind);
+  const g = d3.rollups(rs, (v) => ({ n: v.length, found: sum(v, 'found_fte'), sec: sum(v, 'secured_fte'), real: sum(v, 'realized'), dl: v.filter((r) => r.delayed).length }), (r) => r.team).sort((a, b) => b[1].found - a[1].found);
+  const mx = d3.max(g, (d) => d[1].found) || 1;
+  const ln = (v, c, t) => el('div', { class: 'ln' }, el('i', { style: `width:${Math.max(0.5, v / mx * 100)}%;background:${c}` }), el('span', {}, t));
+  $('#teams').replaceChildren(...g.map(([t, d]) => el('div', { class: 'row clk' + (state.team === t ? ' on' : ''), tabindex: 0, role: 'button', 'aria-pressed': String(state.team === t),
+    onclick: () => { state.team = state.team === t ? '전체' : t; render(); }, onkeydown: (e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); e.currentTarget.click(); } } },
+    el('span', { class: 'nm' }, t, el('small', {}, `${d.n}건${d.dl ? ` · 지연 ${d.dl}` : ''}`)),
+    el('div', { class: 'bars' }, ln(d.found, 'var(--found)', f1(d.found)), ln(d.sec, 'var(--accent)', f1(d.sec)), ln(d.real, 'var(--real)', `${f0(d.real)}명`)))));
+}
+
+function mgmt(rs) {
+  const g = d3.group(rs, (r) => r.mgmt);
+  const mx = d3.max(Object.keys(MGMT), (k) => (g.get(k) ?? []).length) || 1;
+  $('#mgmt').replaceChildren(...Object.keys(MGMT).map((k) => {
+    const v = g.get(k) ?? [], kp = v.filter((r) => r.kpi_prog != null);
+    return el('div', { class: 'row' }, el('span', { class: 'nm' }, `${k} ${MGMT[k]}`, el('small', {}, `발굴 ${f1(sum(v, 'found_fte'))} FTE`)),
+      el('div', { class: 'ln', style: 'grid-template-columns:1fr 8rem' }, el('i', { style: `width:${Math.max(0.5, v.length / mx * 100)}%;background:var(--st4)` }),
+        el('span', {}, `${v.length}건`, k === 'P' ? '' : ` · KPI 진척 ${kp.length ? pct(d3.mean(kp, (r) => r.kpi_prog)) : '—'}`)));
+  }));
+}
+
+function stchip(r) { return el('span', { class: 'stchip', style: `border-color:${stColor(r.idx || 1)}` }, r.stage ?? '—'); }
+function statusPill(r) { return el('span', { class: 'pill ' + ({ 완료: 'c-ok', 지연: 'c-bad', 진행: 'c-mut', '착수 전': 'c-mut' })[r.status] }, r.status === '지연' ? `지연 ${r.late_days}일` : r.status); }
+
+function watch(rs) {
+  const w = rs.filter((r) => r.delayed || r.lagging || r.issues.some((i) => i.level === '누락'))
+    .sort((a, b) => b.late_days - a.late_days || +b.lagging - +a.lagging || b.issues.length - a.issues.length);
+  const t = $('#watch');
+  if (!w.length) { t.replaceChildren(el('tbody', {}, el('tr', {}, el('td', { class: 'empty' }, '관리가 필요한 과제가 없습니다.')))); return; }
+  t.replaceChildren(el('thead', {}, el('tr', {}, ['과제명', '팀', '단계', '상태', '확보 / 기준일 목표', '사유'].map((h) => el('th', {}, h)))),
+    el('tbody', {}, w.map((r) => el('tr', { onclick: () => openDetail(r.task) },
+      el('td', {}, r.task), el('td', {}, r.team), el('td', {}, stchip(r)), el('td', {}, statusPill(r)),
+      el('td', { class: 'num' }, r.target_now ? `${f1(r.secured_fte ?? 0)} / ${f1(r.target_now)}` : '—'),
+      el('td', { class: 'wrap' }, [r.delayed ? `${r.stage} 목표일(${r.due}) 경과` : null, r.lagging ? '확보 FTE가 기준일 목표의 80% 미만' : null,
+        ...r.issues.filter((i) => i.level === '누락').map((i) => `${i.field} 미입력`)].filter(Boolean).join(' · '))))));
+}
+
+function gantt(rs) {
+  const box = $('#gantt'); box.replaceChildren();
+  const W = Math.max(680, box.parentElement.clientWidth); if (!box.parentElement.clientWidth) return;
+  const p = d3.timeParse('%Y-%m-%d'), asof = p(state.asof);
+  const rows = rs.filter((r) => r.plan_start && r.plan_end).sort((a, b) => d3.ascending(a.team, b.team) || d3.ascending(a.plan_start, b.plan_start));
+  if (!rows.length) { box.append(el('p', { class: 'empty' }, '계획 일정이 입력된 과제가 없습니다.')); return; }
+  const items = []; let lastTeam = null;
+  for (const r of rows) { if (r.team !== lastTeam) { items.push({ head: r.team }); lastTeam = r.team; } items.push(r); }
+  const LW = Math.min(240, W * 0.3), RH = 26, top = 26, H = top + items.length * RH + 8;
+  const lo = d3.timeMonth.floor(d3.min(rows, (r) => p(r.act_start && r.act_start < r.plan_start ? r.act_start : r.plan_start)));
+  const hi = d3.timeMonth.ceil(d3.max([...rows.map((r) => p(r.act_end && r.act_end > r.plan_end ? r.act_end : r.plan_end)), asof]));
+  const x = d3.scaleTime([lo, hi], [LW + 8, W - 28]);
+  const svg = d3.select(box).append('svg').attr('width', W).attr('height', H).attr('viewBox', `0 0 ${W} ${H}`);
+  const ticks = x.ticks(d3.timeMonth.every(W > 1000 ? 2 : 3));
+  svg.append('g').attr('class', 'grid').selectAll('line').data(ticks).join('line').attr('x1', x).attr('x2', x).attr('y1', top - 6).attr('y2', H);
+  svg.append('g').selectAll('text').data(ticks.filter((t) => Math.abs(x(t) - x(asof)) > 34)).join('text').attr('x', x).attr('y', 14).attr('text-anchor', 'middle').text(d3.timeFormat('%y.%m'));
+  const tip = tooltip(box);
+  items.forEach((it, i) => {
+    const y0 = top + i * RH;
+    if (it.head) { svg.append('text').attr('x', 0).attr('y', y0 + RH / 2 + 4).attr('style', 'fill:var(--fg);font-weight:600;font-size:12px').text(it.head); return; }
+    const r = it, g = svg.append('g').attr('class', 'clk').style('cursor', 'pointer').on('click', () => openDetail(r.task));
+    g.append('rect').attr('x', 0).attr('y', y0).attr('width', W).attr('height', RH).attr('fill', 'transparent');
+    const name = g.append('text').attr('x', 12).attr('y', y0 + RH / 2 + 4).attr('style', 'fill:var(--fg)').text(r.task);
+    while (name.node().getComputedTextLength() > LW - 16 && name.text().length > 3) name.text(name.text().slice(0, -2) + '…');
+    g.append('rect').attr('x', x(p(r.plan_start))).attr('y', y0 + 5).attr('width', Math.max(2, x(p(r.plan_end)) - x(p(r.plan_start)))).attr('height', RH - 10).attr('rx', 4).attr('fill', 'var(--found)').attr('fill-opacity', 0.55);
+    if (r.act_start) {
+      const e = r.act_end ? p(r.act_end) : asof, c = r.done ? 'var(--ok)' : r.delayed ? 'var(--bad)' : 'var(--accent)';
+      g.append('rect').attr('x', x(p(r.act_start))).attr('y', y0 + 10).attr('width', Math.max(2, x(e) - x(p(r.act_start)))).attr('height', RH - 20).attr('rx', 3).attr('fill', c);
+    }
+    [1, 2, 3, 4, 5].forEach((k) => {
+      const d = r[`s${k}_date`]; if (!d) return;
+      const cx = x(p(d)), cy = y0 + RH / 2, past = r.done || k < r.idx, late = k === r.idx && r.delayed;
+      g.append('path').attr('d', `M${cx},${cy - 5}L${cx + 5},${cy}L${cx},${cy + 5}L${cx - 5},${cy}Z`)
+        .attr('fill', past ? stColor(k) : 'var(--panel)').attr('stroke', late ? 'var(--bad)' : 'var(--st5)').attr('stroke-width', late ? 2 : 1.2);
+    });
+    g.on('mousemove', (ev) => tip.show(ev, [el('div', { class: 't' }, `${r.team} · ${r.stage} ${STAGES[r.idx - 1] ?? ''}`), el('div', {}, el('b', {}, r.task)),
+      el('div', {}, `계획 ${r.plan_start} ~ ${r.plan_end}`), el('div', {}, `실적 ${r.act_start ?? '미착수'} ~ ${r.act_end ?? (r.act_start ? '진행 중' : '')}`),
+      el('div', { class: r.delayed ? 'c-bad' : 't' }, r.delayed ? `${r.stage} 목표일 ${r.due} 경과 (${r.late_days}일)` : `현재 단계 목표일 ${r.due ?? '—'}`)])).on('mouseleave', () => tip.hide());
+  });
+  svg.append('line').attr('x1', x(asof)).attr('x2', x(asof)).attr('y1', top - 6).attr('y2', H).attr('stroke', 'var(--fg)');
+  svg.append('text').attr('x', x(asof)).attr('y', 14).attr('text-anchor', 'middle').attr('style', 'fill:var(--fg);font-weight:600').text('기준일');
+  box.style.minHeight = H + 'px';
+}
+
+const COLS = [
+  ['task', '과제명(중분류)'], ['team', '팀'], ['kind', '구분'], ['stage', '단계'], ['status', '상태'], ['mgmt', '지표'], ['kpi', 'KPI'],
+  ['kpi_prog', 'KPI 확보 진척', 'num'], ['found_fte', '발굴 FTE', 'num'], ['target_now', '기준일 목표', 'num'], ['secured_fte', '확보 FTE', 'num'], ['realized', '실현(명)', 'num'], ['issues', '점검', 'num'],
+];
+function table(rs) {
+  const q = state.q.trim().toLowerCase();
+  const chips = $('#stchips');
+  chips.replaceChildren(...[null, 1, 2, 3, 4, 5].map((i) => el('button', { class: 'chip', type: 'button', 'aria-pressed': String(state.stage === i), onclick: () => { state.stage = i; render(); } },
+    i ? `S${i} ${rs.filter((r) => r.idx === i).length}` : `전체 ${rs.length}`)));
+  let v = rs.filter((r) => (!state.stage || r.idx === state.stage) && (!q || [r.task, r.cat, r.team, r.group, r.kpi, r.tgt_ids, r.dev_ids, r.dev_dept].join(' ').toLowerCase().includes(q)));
+  const { key, dir } = state.sort, val = (r) => key === 'issues' ? r.issues.length : r[key];
+  v = v.slice().sort((a, b) => { const x = val(a), y = val(b); return (x == null) - (y == null) || (typeof x === 'number' ? (x - y) : String(x).localeCompare(String(y), 'ko')) * dir; });
+  const mx = d3.max(rs, (r) => r.found_fte) || 1;
+  const cell = (r, k) => {
+    if (k === 'stage') return stchip(r);
+    if (k === 'status') return statusPill(r);
+    if (k === 'found_fte') return [el('span', { class: 'cellbar', style: `width:${Math.round((r.found_fte ?? 0) / mx * 60)}px` }), f1(r.found_fte)];
+    if (k === 'kpi_prog') return r.kpi_prog == null ? '—' : pct(r.kpi_prog);
+    if (k === 'secured_fte') return el('span', { class: r.lagging ? 'c-bad' : '' }, f1(r.secured_fte));
+    if (k === 'target_now') return r.target_now ? f1(r.target_now) : '—';
+    if (k === 'realized') return r.realized ? f0(r.realized) : '—';
+    if (k === 'issues') return r.issues.length ? el('span', { class: 'c-bad' }, `${r.issues.length}건`) : el('span', { class: 'c-ok' }, '정상');
+    if (k === 'kpi') return r.kpi === '기타' ? (r.kpi_etc ?? '기타') : r.kpi;
+    return r[k] ?? '—';
+  };
+  $('#tbl').replaceChildren(
+    el('thead', {}, el('tr', {}, COLS.map(([k, h, c]) => el('th', { class: c ?? '', 'aria-sort': key === k ? (dir > 0 ? 'ascending' : 'descending') : 'none' },
+      el('button', { type: 'button', onclick: () => { state.sort = { key: k, dir: key === k ? -dir : (c ? -1 : 1) }; render(); } }, h))))),
+    el('tbody', {}, v.length ? v.map((r) => el('tr', { class: state.sel === r.task ? 'sel' : '', onclick: () => openDetail(r.task) }, COLS.map(([k, , c]) => el('td', { class: c ?? '' }, cell(r, k)))))
+      : el('tr', {}, el('td', { colspan: COLS.length, class: 'empty' }, '조건에 맞는 과제가 없습니다.'))));
+}
+
+function openDetail(task) { state.sel = task; if (state.tab !== 'list') setTab('list'); else render(); requestAnimationFrame(() => $('#detail').scrollIntoView({ behavior: 'smooth', block: 'start' })); }
+
+function detail() {
+  const box = $('#detail'), r = ALL.find((d) => d.task === state.sel);
+  box.hidden = !r; if (!r) return;
+  const missing = new Set(r.issues.filter((i) => i.level === '누락').map((i) => i.field));
+  const show = (k, t) => { const v = r[k]; if (v == null || v === '') return '—'; return t === 'n' || t === 'auto' ? (typeof v === 'number' ? fnum(v) : v) : v; };
+  const secs = SEC.map((s, si) => el('div', { class: 'sec' }, el('h3', {}, s),
+    si === 5 ? el('div', { class: 'ms' }, [1, 2, 3, 4, 5].map((k) => el('div', { class: (r.done || k < r.idx ? 'done' : '') + (k === r.idx ? (r.delayed ? ' late' : ' cur') : '') },
+      el('b', {}, `S${k}`), r[`s${k}_date`] ? r[`s${k}_date`].slice(2).replace(/-/g, '.') : '—', k >= 3 ? el('span', {}, `${fnum(r[`s${k}_fte`])} FTE`) : null))) : null,
+    el('dl', { class: 'kv' }, FIELDS.filter(([, , sec]) => sec === si).flatMap(([k, , , t]) => [el('dt', {}, label[k]), el('dd', { class: missing.has(label[k]) ? 'miss' : '' }, missing.has(label[k]) ? '미입력' : show(k, t))]))));
+  box.replaceChildren(...[
+    el('div', { class: 'hd' }, el('div', {}, el('h2', {}, `${r.cat} › ${r.task}`), el('p', { class: 'note' }, `${r.team} ${r.group ?? ''} · ${r.kind} · ${r.mgmt} ${MGMT[r.mgmt] ?? ''} / ${r.kpi === '기타' ? r.kpi_etc ?? '기타' : r.kpi}`)),
+      el('div', { class: 'toolbar' }, stchip(r), statusPill(r), el('button', { class: 'btn', type: 'button', onclick: () => { state.sel = null; render(); } }, '닫기'))),
+    r.issues.length ? el('p', { class: 'msg err' }, '점검: ' + r.issues.map((i) => `${i.field} (${i.rule})`).join(' · ')) : null,
+    el('div', { class: 'secs' }, secs)].filter(Boolean));
+}
+
+function check(rs) {
+  const all = rs.flatMap((r) => r.issues.map((i) => ({ ...i, task: r.task, team: r.team, stage: r.stage, key: `${i.level}|${i.rule}` })));
+  const rules = d3.rollups(all, (v) => v.length, (d) => d.key).sort((a, b) => b[1] - a[1]);
+  $('#rules').replaceChildren(el('button', { class: 'chip', type: 'button', 'aria-pressed': String(!state.rule), onclick: () => { state.rule = null; render(); } }, `전체`, el('b', {}, all.length)),
+    ...rules.map(([k, n]) => el('button', { class: 'chip', type: 'button', 'aria-pressed': String(state.rule === k), onclick: () => { state.rule = k; render(); } }, k.replace('|', ' · '), el('b', {}, n))));
+  const v = all.filter((d) => !state.rule || d.key === state.rule);
+  $('#issues').replaceChildren(el('thead', {}, el('tr', {}, ['팀', '과제명', '단계', '구분', '항목', '규칙'].map((h) => el('th', {}, h)))),
+    el('tbody', {}, v.length ? v.map((d) => el('tr', { onclick: () => openDetail(d.task) }, el('td', {}, d.team), el('td', {}, d.task), el('td', {}, d.stage ?? '—'),
+      el('td', {}, el('span', { class: 'pill ' + (d.level === '누락' ? 'c-bad' : 'c-warn') }, d.level)), el('td', {}, d.field), el('td', {}, d.rule)))
+      : el('tr', {}, el('td', { colspan: 6, class: 'empty' }, '점검에서 걸린 항목이 없습니다.'))));
+}
+
+function setTab(t) {
+  state.tab = t;
+  for (const b of document.querySelectorAll('.tab')) b.setAttribute('aria-selected', String(b.dataset.tab === t));
+  for (const s of ['overview', 'schedule', 'list', 'check']) document.getElementById(s).hidden = s !== t;
+  try { history.replaceState(null, '', '#' + t); } catch (e) {}
+  render();
+}
+
+// 엑셀 읽기: '과제명(중분류)'가 있는 행을 컬럼명 행으로 보고 그 아래를 데이터로 읽음
+function readWorkbook(buf, name) {
+  const wb = XLSX.read(buf, { type: 'array', cellDates: true });
+  for (const sn of wb.SheetNames) {
+    const aoa = XLSX.utils.sheet_to_json(wb.Sheets[sn], { header: 1, raw: true, defval: null });
+    const hi = aoa.findIndex((row) => row.some((c) => norm(c) === norm('과제명(중분류)')));
+    if (hi < 0) continue;
+    const keys = aoa[hi].map((h) => byHeader.get(norm(h)) ?? null);
+    const rows = aoa.slice(hi + 1).filter((row) => row.some((c) => c != null && c !== '')).map((row) => Object.fromEntries(keys.map((k, i) => [k, row[i]]).filter(([k]) => k)));
+    const known = keys.filter(Boolean).length;
+    return { rows, sheet: sn, known, unknown: aoa[hi].filter((h, i) => h != null && !keys[i] && !/단위\s*\[자동\]/.test(h)) };
+  }
+  throw new Error(`'${name}'에서 '과제명(중분류)' 컬럼을 찾지 못했습니다. 양식의 컬럼명 행이 있는지 확인해 주세요.`);
+}
+
+$('#b-upload').addEventListener('click', () => $('#f-file').click());
+$('#f-file').addEventListener('change', async (e) => {
+  const f = e.target.files[0]; if (!f) return;
+  const msg = $('#msg');
+  try {
+    const res = readWorkbook(await f.arrayBuffer(), f.name);
+    load(res.rows, `${f.name} (${res.sheet} 시트)`, null);
+    msg.className = 'msg'; msg.hidden = false;
+    msg.textContent = `${f.name}에서 ${state.rows.length}개 과제를 읽었습니다. 인식한 컬럼 ${res.known}개` + (res.unknown.length ? `, 인식하지 못한 컬럼: ${res.unknown.join(', ')}` : '') + '.';
+  } catch (err) { msg.className = 'msg err'; msg.hidden = false; msg.textContent = err.message; }
+  e.target.value = '';
+});
+$('#b-sample').addEventListener('click', () => { $('#msg').hidden = true; load(sample, '예시 데이터', sample[0]?.asof); });
+$('#f-asof').addEventListener('change', (e) => { if (e.target.value && e.target.validity.valid) { state.asof = e.target.value; render(); } });
+$('#f-team').addEventListener('change', (e) => { state.team = e.target.value; render(); });
+$('#f-kind').addEventListener('change', (e) => { state.kind = e.target.value; render(); });
+$('#q').addEventListener('input', (e) => { state.q = e.target.value; render(); });
+for (const b of document.querySelectorAll('.tab')) b.addEventListener('click', () => setTab(b.dataset.tab));
+let rt; window.addEventListener('resize', () => { clearTimeout(rt); rt = setTimeout(render, 150); });
+
+load(sample, '예시 데이터', sample[0]?.asof);
+const h = location.hash.slice(1); if (['overview', 'schedule', 'list', 'check'].includes(h)) setTab(h);
+})();
+</script>
+</body>
+</html>
